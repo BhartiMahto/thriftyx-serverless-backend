@@ -1,0 +1,22 @@
+org: thriftyx
+service: backend
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: dev 
+
+plugins:
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    useStage: false
+
+functions:
+  api:
+    handler: handler.api
+    events:
+      - http:
+          path: /{proxy+}
+          method: any
