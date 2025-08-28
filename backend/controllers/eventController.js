@@ -1,4 +1,4 @@
-const Event = require("../models/EventModel");
+const Event = require("../models/eventModel");
 
 const getEvents = async (req, res) => {
   try {

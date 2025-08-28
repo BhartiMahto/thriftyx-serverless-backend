@@ -16,6 +16,7 @@ custom:
 functions:
   api:
     handler: handler.api
+    timeout: 90
     events:
       - http:
           path: /{proxy+}

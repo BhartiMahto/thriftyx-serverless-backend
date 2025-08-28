@@ -9,7 +9,10 @@
     "express": "^4.21.2",
     "mongoose": "^8.16.0",
     "multer": "^2.0.1",
-    "serverless-http": "^3.2.0"
+    "nodemailer": "^7.0.4",
+    "serverless-http": "^3.2.0",
+    "streamifier": "^0.1.1",
+    "twilio": "^5.7.2"
   },
   "devDependencies": {
     "serverless-offline": "^14.4.0"
