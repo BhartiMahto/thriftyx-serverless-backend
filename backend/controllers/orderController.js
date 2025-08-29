@@ -126,7 +126,7 @@ const paidCustomerCount = async (req, res) => {
 
 const pendingCustomerCount = async (req, res) => {
   try {
-    const count = await Order.countDocuments({ status: "pending" });
+    const count = await Order.countDocuments({ status: "in_progress" });
     res.status(200).json({
       success: true,
       totalPendingOrders: count,

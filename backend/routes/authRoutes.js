@@ -1,12 +1,54 @@
-// const AuthController = require("../controllers/authController");
-// const { registerValidator, loginValidator, passwordValidator } = require("../validators/auth.validator");
+const AuthController = require("../controllers/authController");
+const connectDB = require("../config/db");
+const router = require("express").Router();
 
-// const authRoutes = require("express").Router();
+router.post(
+  "/register",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  AuthController.register
+);
+router.post(
+  "/login",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  AuthController.login
+);
+router.post(
+  "/verify-code",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  AuthController.verifyCode
+);
+router.post(
+  "/resend-otp",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  AuthController.resendOTP
+);
+router.post(
+  "/forgot-password",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  AuthController.forgotPassword
+);
+router.post(
+  "/update-password",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  AuthController.updatePassword
+);
 
-// authRoutes.post('/register',registerValidator, AuthController.register);
-// authRoutes.post('/login',loginValidator, AuthController.login);
-// authRoutes.post('/verify-code', AuthController.verifyCode);
-// authRoutes.post('/resend-otp', AuthController.resendOTP);
-// authRoutes.post('/forgot-password', AuthController.forgotPassword);
-// authRoutes.post('/update-password', passwordValidator, AuthController.updatePassword);
-// module.exports = authRoutes;
+module.exports = router;
