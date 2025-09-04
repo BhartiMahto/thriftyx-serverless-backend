@@ -161,6 +161,15 @@ router.post(
   userController.sendEmail
 );
 
+router.get(
+  "/FAQ",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  faqController.faqs
+);
+
 router.post(
   "/addFAQ",
   async (req, res, next) => {
