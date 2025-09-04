@@ -2,11 +2,10 @@ const Order = require("../models/orderModel");
 
 const getAllOrders = async (req, res) => {
   try {
-    const orders = await Order.find()
+    const orders = await Order.find({})
       .populate("user_id", "name email city")
       .populate("event_id", "name type")
       .select("status createdBy grand_total user_id event_id")
-      .limit(1);
 
     const flattened = orders.map((order) => ({
       name: order.user_id?.name || null,
