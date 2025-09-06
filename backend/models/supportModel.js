@@ -7,7 +7,7 @@ const SupportSchema = new mongoose.Schema({
   },
   email: {
     type: String,
-    rquired: [true, "email is required"],
+    required: [true, "email is required"],
   },
   subject: {
     type: String,
@@ -19,6 +19,11 @@ const SupportSchema = new mongoose.Schema({
     required: [true, "message is required"],
     trim: true,
   },
+  status: {
+    type: String,
+    required: false,
+    default: 'open',
+  }
 });
 
 module.exports = mongoose.model("support", SupportSchema);

@@ -22,9 +22,10 @@ const addFAQ = async (req, res) => {
       });
     }
 
-    const newFAQ = FAQ.create({ category, question, answer });
+    // FIX: Added 'await' to ensure the document is created before responding
+    const newFAQ = await FAQ.create({ category, question, answer });
 
-    res.status(200).json(newFAQ);
+    res.status(201).json(newFAQ); // Use 201 for resource creation
   } catch (err) {
     console.log(err);
     res.status(500).json({

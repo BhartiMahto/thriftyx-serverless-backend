@@ -206,6 +206,15 @@ router.get(
   supportController.getSupports
 );
 
+router.patch(
+  "/supports/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  supportController.updateSupport
+);
+
 router.delete(
   "/supports/:id",
   async (req, res, next) => {
