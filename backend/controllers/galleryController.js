@@ -91,38 +91,57 @@ const unsetHeroImage = async (req, res) => {
 const downloadAllImage = async (req, res) => {
   try {
     const images = await Gallery.find();
-    if (!images || images.length === 0) {
-      return res.status(404).json({ message: "No images found to download" });
-    }
 
     res.setHeader("Content-Disposition", "attachment; filename=gallery_images.zip");
     res.setHeader("Content-Type", "application/zip");
 
-    const archive = archiver("zip", { zlib: { level: 9 } });
-    archive.on("error", (err) => { throw err; });
+    const archive = archiver("zip");
+
+    // IMPORTANT: This tells the response to end only when the archive is finished.
+    archive.on('end', () => {
+      console.log('Archive stream has ended.');
+      res.end();
+    });
+
+    // Handle any errors that occur during archiving
+    archive.on('error', (err) => {
+      console.error("Archive error:", err);
+      // End the response abruptly on error
+      res.status(500).send({ error: err.message });
+    });
+
+    // Pipe the archive data to the response
     archive.pipe(res);
 
-    for (const img of images) {
+    if (!images || images.length === 0) {
+      archive.finalize();
+      return;
+    }
+
+    // Use Promise.all to fetch all images before finalizing
+    await Promise.all(images.map(async (img) => {
       try {
         const response = await axios({
-          url: img.image, 
-          method: "GET",
-          responseType: "stream",
+          url: img.image,
+          method: 'GET',
+          responseType: 'stream'
         });
-        
-        const extension = img.image.split(".").pop();
+        const extension = img.image.split('.').pop() || 'jpg';
         const fileName = `${(img.category || 'image').replace(/[^\w\s]/gi, "").replace(/ /g, "_")}_${img._id}.${extension}`;
         archive.append(response.data, { name: fileName });
       } catch (error) {
         console.error(`Could not download image ${img.image}: ${error.message}`);
-        archive.append(`Failed to download image ${img._id}`, { name: `error_${img._id}.txt` });
+        archive.append(`Failed to download: ${img.image}`, { name: `error_${img._id}.txt` });
       }
-    }
-    await archive.finalize();
+    }));
+    
+    // Finalize the archive. This will trigger the 'end' event when done.
+    archive.finalize();
+
   } catch (err) {
-    console.error("Download error:", err);
+    console.error("Error in downloadAllImage function:", err);
     if (!res.headersSent) {
-      res.status(500).json({ message: "Download failed", error: err.message });
+      res.status(500).json({ message: "Download failed due to a server error." });
     }
   }
 };
