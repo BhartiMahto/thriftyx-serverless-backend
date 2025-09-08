@@ -2,7 +2,7 @@ const Gallery = require("../models/galleryModel");
 const cloudinary = require("../utils/cloudinary");
 const { Readable } = require("stream");
 const archiver = require("archiver");
-const axios = require("axios"); // <<<< ----- ADD THIS LINE
+const axios = require("axios");
 
 const getGallery = async (req, res) => {
   try {
@@ -44,8 +44,6 @@ const uploadImage = async (req, res) => {
 
 const deleteImage = async (req, res) => {
   try {
-    // Note: This delete function should also remove the image from Cloudinary
-    // to be fully effective, which requires the 'image' to be an object with a public_id.
     const deletedImage = await Gallery.findByIdAndDelete(req.params.id);
     if (!deletedImage) {
       return res.status(404).json({ message: "Image not found to delete" });
@@ -59,7 +57,6 @@ const deleteImage = async (req, res) => {
 const setHeroImage = async (req, res) => {
   try {
     const { id } = req.params;
-    await Gallery.updateMany({ isHeroImage: true }, { $set: { isHeroImage: false } });
     const newHero = await Gallery.findByIdAndUpdate(
       id,
       { $set: { isHeroImage: true } },
