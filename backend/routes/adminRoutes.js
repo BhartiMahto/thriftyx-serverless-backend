@@ -50,7 +50,7 @@ router.delete(
     await connectDB();
     next();
   },
-  galleryController.delteImage
+  galleryController.deleteImage
 );
 
 router.get(
@@ -60,6 +60,24 @@ router.get(
     next();
   },
   galleryController.downloadAllImage
+);
+
+router.patch(
+  "/gallery/hero/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  galleryController.setHeroImage
+);
+
+router.patch(
+  "/gallery/hero/unset/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  galleryController.unsetHeroImage
 );
 
 router.get(
