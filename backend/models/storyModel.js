@@ -14,6 +14,15 @@ const StoryModel = new mongoose.Schema({
     type: String,
     required: true,
   },
-});
-
+  author: {
+      type: String,
+      required: true,
+  },
+  tags: {
+      type: [String],
+      default: [],
+  },
+},
+{ timestamps: true }
+);
 module.exports = mongoose.model("story", StoryModel);

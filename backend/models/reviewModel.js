@@ -2,6 +2,11 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const Review = new Schema({
+    eventId: {
+        type: Schema.Types.ObjectId,
+        ref: 'Event',
+        required: true,
+    },
     name: {
         type: String,
         unique: false,
