@@ -1,5 +1,7 @@
 const User = require("../models/userModel");
+const Admin = require("../models/adminModel");
 const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const {
   generateOtp,
   sendOtpToEmail,
@@ -7,18 +9,22 @@ const {
 } = require("../utils/otp");
 const { jwtSignGenerator, jwtGenerator } = require("../utils/jwt");
 
+/* ------------------ USER REGISTER/LOGIN/OTP ------------------ */
+
 const register = async (req, res) => {
-  const { email, phone, name } = req.body;
+  const { email, phone, name, password } = req.body;
   const lowerCaseEmail = email ? email.toLowerCase() : null;
 
   const filter = phone ? { phone } : { email: lowerCaseEmail };
-  const data = await User.findOne(filter);
-  if (data)
+  const existingUser = await User.findOne(filter);
+
+  if (existingUser) {
     return res
       .status(400)
       .json({ message: "User Already Exists", statusCode: 400 });
+  }
 
-  const hassPassword = bcrypt.hashSync(req.body.password, 8);
+  const hashPassword = bcrypt.hashSync(password, 8);
   const tokenWith = phone ? phone : lowerCaseEmail;
   const token = jwtSignGenerator(tokenWith);
   const today = new Date();
@@ -31,7 +37,7 @@ const register = async (req, res) => {
     name,
     phone,
     email: lowerCaseEmail,
-    password: hassPassword,
+    password: hashPassword,
     token,
     otp: fourDigitOtp,
     createdBy: today,
@@ -49,123 +55,115 @@ const register = async (req, res) => {
   }
 };
 
-const login = async (req, res) => {
+const userLogin = async (req, res) => {
   const { email, phone } = req.body;
   const lowerCaseEmail = email ? email.toLowerCase() : null;
 
   const filter = phone ? { phone } : { email: lowerCaseEmail };
-  const data = await User.findOne(filter);
+  const user = await User.findOne(filter);
 
-  if (!data) return res.status(404).json({ message: "User Not Found" });
+  if (!user) return res.status(404).json({ message: "User Not Found" });
 
   const fourDigitOtp = generateOtp(4);
-  if (lowerCaseEmail) sendOtpToEmail(fourDigitOtp, lowerCaseEmail, data.name);
+
+  if (lowerCaseEmail) sendOtpToEmail(fourDigitOtp, lowerCaseEmail, user.name);
   if (phone) sendMessageToWhatsapp(fourDigitOtp, phone);
 
   await User.updateOne(
-    { _id: data._id },
+    { _id: user._id },
     {
       $set: {
         otp: fourDigitOtp,
-        isVerified: data.isVerified,
-        registrationId: data.registrationId,
+        isVerified: user.isVerified,
+        registrationId: user.registrationId,
       },
     }
   );
 
-  if (!data.isVerified) {
-    return res
-      .status(200)
-      .json({ message: "User Unverified", statusCode: 200 });
+  if (!user.isVerified) {
+    return res.status(200).json({ message: "User Unverified", statusCode: 200 });
   }
+
   return res.status(200).json({ message: "User Verified", statusCode: 200 });
 };
 
 const verifyCode = async (req, res) => {
-  const { email, phone } = req.body;
+  const { email, phone, otp, otpType } = req.body;
   const lowerCaseEmail = email ? email.toLowerCase() : null;
 
   const filter = phone ? { phone } : { email: lowerCaseEmail };
-  const data = await User.findOne(filter);
+  const user = await User.findOne(filter);
 
-  if (!data) return res.status(404).json({ message: "User Not Found" });
-  if (data.otp !== req.body.otp)
+  if (!user) return res.status(404).json({ message: "User Not Found" });
+  if (user.otp !== otp) {
     return res.status(400).json({ message: "Incorrect OTP", statusCode: 400 });
+  }
 
-  if (req.body.otpType === "register") {
+  if (otpType === "register") {
     const registrationId = "thriftyx_" + generateOtp(6);
-    const token = jwtGenerator({ _id: data._id });
+    const token = jwtGenerator({ _id: user._id });
 
     await User.updateOne(
-      { _id: data._id },
-      {
-        $set: {
-          token,
-          otp: null,
-          isVerified: true,
-          registrationId,
-        },
-      }
+      { _id: user._id },
+      { $set: { token, otp: null, isVerified: true, registrationId } }
     );
-
-    const user = {
-      _id: data._id,
-      name: data.name,
-      phone: data.phone,
-      email: data.email,
-      isVerified: true,
-      registrationId,
-    };
 
     return res.status(200).json({
       message: "Registration Successful",
-      user,
+      user: {
+        _id: user._id,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        isVerified: true,
+        registrationId,
+      },
       token,
       statusCode: 200,
     });
   }
 
-  if (req.body.otpType === "login") {
-    const token = jwtGenerator({ _id: data._id });
+  if (otpType === "login") {
+    const token = jwtGenerator({ _id: user._id });
 
     await User.updateOne(
-      { _id: data._id },
+      { _id: user._id },
       {
         $set: {
           token,
           otp: null,
-          isVerified: data.isVerified,
-          registrationId: data.registrationId,
+          isVerified: user.isVerified,
+          registrationId: user.registrationId,
         },
       }
     );
 
-    const user = {
-      _id: data._id,
-      DOB: data.DOB,
-      city: data.city,
-      name: data.name,
-      phone: data.phone,
-      email: data.email,
-      gender: data.gender,
-      isVerified: data.isVerified,
-      registrationId: data.registrationId,
-      profilePicture: data.profilePicture,
-    };
-
-    return res
-      .status(200)
-      .json({ message: "Login Success", user, token, statusCode: 200 });
+    return res.status(200).json({
+      message: "Login Success",
+      user: {
+        _id: user._id,
+        DOB: user.DOB,
+        city: user.city,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        gender: user.gender,
+        isVerified: user.isVerified,
+        registrationId: user.registrationId,
+        profilePicture: user.profilePicture,
+      },
+      token,
+      statusCode: 200,
+    });
   }
 
-  if (req.body.otpType === "forgot") {
-    if (data.forgotCode !== req.body.otp)
-      return res.status(400).json({ message: "Incorrect OTP", statusCode: 400 });
-
-    await User.updateOne(
-      { _id: data._id },
-      { $set: { forgotCode: null } }
-    );
+  if (otpType === "forgot") {
+    if (user.forgotCode !== otp) {
+      return res
+        .status(400)
+        .json({ message: "Incorrect OTP", statusCode: 400 });
+    }
+    await User.updateOne({ _id: user._id }, { $set: { forgotCode: null } });
     return res
       .status(200)
       .json({ message: "OTP Verified Successfully", statusCode: 200 });
@@ -177,21 +175,23 @@ const resendOTP = async (req, res) => {
   const lowerCaseEmail = email ? email.toLowerCase() : null;
 
   const filter = phone ? { phone } : { email: lowerCaseEmail };
-  const data = await User.findOne(filter);
-  if (!data) return res.status(404).json({ message: "User Not Found" });
+  const user = await User.findOne(filter);
+
+  if (!user) return res.status(404).json({ message: "User Not Found" });
 
   const fourDigitOtp = generateOtp(4);
-  if (lowerCaseEmail) sendOtpToEmail(fourDigitOtp, lowerCaseEmail, data.name);
+
+  if (lowerCaseEmail) sendOtpToEmail(fourDigitOtp, lowerCaseEmail, user.name);
   if (phone) sendMessageToWhatsapp(fourDigitOtp, phone);
 
-  if (!data.isVerified) {
+  if (!user.isVerified) {
     await User.updateOne(
-      { _id: data._id },
+      { _id: user._id },
       {
         $set: {
           otp: fourDigitOtp,
-          isVerified: data.isVerified,
-          registrationId: data.registrationId,
+          isVerified: user.isVerified,
+          registrationId: user.registrationId,
         },
       }
     );
@@ -199,44 +199,43 @@ const resendOTP = async (req, res) => {
   }
 
   await User.updateOne(
-    { _id: data._id },
+    { _id: user._id },
     { $set: { forgotCode: fourDigitOtp } }
   );
+
   return res.status(200).json({ message: "New OTP Sent", statusCode: 200 });
 };
 
 const updatePassword = async (req, res) => {
-  const { email } = req.body;
+  const { email, phone, password } = req.body;
   const lowerCaseEmail = email ? email.toLowerCase() : null;
 
-  const data = await User.findOne({
-    $or: [{ phone: req.body.phone }, { email: lowerCaseEmail }],
+  const user = await User.findOne({
+    $or: [{ phone }, { email: lowerCaseEmail }],
   });
 
-  if (!data) return res.status(404).json({ message: "User Not Found" });
-  if (data.forgotCode !== null)
+  if (!user) return res.status(404).json({ message: "User Not Found" });
+  if (user.forgotCode !== null) {
     return res.status(400).json({ message: "Email Not Verified" });
+  }
 
-  const passIsValid = bcrypt.compareSync(req.body.password, data.password);
-  if (passIsValid)
+  const passIsValid = bcrypt.compareSync(password, user.password);
+  if (passIsValid) {
     return res.status(400).json({
       message: "Password Must Be Different From Previous Password",
     });
+  }
 
-  const hassPassword = bcrypt.hashSync(req.body.password, 8);
-  await User.updateOne(
-    { _id: data._id },
-    { $set: { password: hassPassword } }
-  );
+  const hashPassword = bcrypt.hashSync(password, 8);
+  await User.updateOne({ _id: user._id }, { $set: { password: hashPassword } });
 
-  res
+  return res
     .status(200)
     .json({ message: "Password Reset Successfully", statusCode: 200 });
 };
 
 const forgotPassword = async (req, res) => {
   try {
-
     const { email, phone } = req.body;
     const lowerCaseEmail = email ? email.toLowerCase() : null;
 
@@ -259,6 +258,34 @@ const forgotPassword = async (req, res) => {
   }
 };
 
+const adminLogin = async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
+    const admin = await Admin.findOne({ email });
+    if (!admin) return res.status(400).json({ error: "Invalid credentials" });
 
-module.exports = { register, login, verifyCode, resendOTP, updatePassword,forgotPassword };
+    const isMatch = await bcrypt.compare(password, admin.password);
+    if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
+
+    const token = jwt.sign(
+      { id: admin._id, role: admin.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+
+    res.json({ message: "Login Success", token, admin });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+module.exports = {
+  register,
+  userLogin,
+  verifyCode,
+  resendOTP,
+  updatePassword,
+  forgotPassword,
+  adminLogin,
+};

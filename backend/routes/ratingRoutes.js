@@ -1,16 +1,16 @@
 const express = require("express");
 const router = express.Router();
-const supportController = require("../controllers/supportController");
+const ratingConroller = require("../controllers/ratingController");
 const connectDB = require("../config/db");
 
 router.get(
-  "/:id",
+  "/",
   async (req, res, next) => {
     await connectDB();
     next();
   },
-  supportController.getSupport
-); 
+  ratingConroller.getRatings
+);
 
 router.post(
   "/",
@@ -18,8 +18,7 @@ router.post(
     await connectDB();
     next();
   },
-  supportController.createSupport
+  ratingConroller.addRating
 );
-
 
 module.exports = router;

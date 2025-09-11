@@ -5,7 +5,8 @@ const orderController = require("../controllers/orderController");
 const userController = require("../controllers/userController");
 const faqController = require("../controllers/faqController");
 const supportController = require("../controllers/supportController");
-const founderController = require("../controllers/founderController")
+const founderController = require("../controllers/founderController");
+const partnerController = require("../controllers/partnerController");
 const upload = require("../middlewares/uploadImage");
 const connectDB = require("../config/db");
 
@@ -242,7 +243,6 @@ router.get(
   founderController.getFounderById
 );
 
-
 router.patch(
   "/founder/:id",
   async (req, res, next) => {
@@ -259,6 +259,15 @@ router.delete(
     next();
   },
   founderController.deleteFounder
+);
+
+router.post(
+  "/partner",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  partnerController.addPartner
 );
 
 module.exports = router;
