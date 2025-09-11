@@ -51,7 +51,7 @@ router.delete(
     await connectDB();
     next();
   },
-  galleryController.delteImage
+  galleryController.deleteImage
 );
 
 router.get(
@@ -61,6 +61,24 @@ router.get(
     next();
   },
   galleryController.downloadAllImage
+);
+
+router.patch(
+  "/gallery/hero/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  galleryController.setHeroImage
+);
+
+router.patch(
+  "/gallery/hero/unset/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  galleryController.unsetHeroImage
 );
 
 router.get(
@@ -162,6 +180,15 @@ router.post(
   userController.sendEmail
 );
 
+router.get(
+  "/FAQ",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  faqController.faqs
+);
+
 router.post(
   "/addFAQ",
   async (req, res, next) => {
@@ -196,6 +223,15 @@ router.get(
     next();
   },
   supportController.getSupports
+);
+
+router.patch(
+  "/supports/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  supportController.updateSupport
 );
 
 router.delete(

@@ -14,6 +14,10 @@ const gallerySchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    isHeroImage: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

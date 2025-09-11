@@ -23,6 +23,15 @@ router.get(
   storyController.getStories
 );
 
+router.get(
+  "/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  storyController.getStoryById
+);
+
 router.delete(
   "/:id",
   async (req, res, next) => {

@@ -9,6 +9,7 @@ const storyRoutes = require("./routes/storyRoutes");
 const eventRoutes = require("./routes/eventRoutes")
 const cartRoutes = require("./routes/cartRoutes");
 const ratingRoutes = require("./routes/ratingRoutes")
+const reviewRoutes = require("./routes/reviewRoutes");
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -23,5 +24,6 @@ app.use("/api/support", supportRoutes);
 app.use("/api/ratring", ratingRoutes)
 app.use("/api/events", eventRoutes)
 app.use("/api/story", storyRoutes)
+app.use("/api/reviews", reviewRoutes);
 
 module.exports = app;
