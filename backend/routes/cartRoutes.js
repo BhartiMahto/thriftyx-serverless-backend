@@ -13,4 +13,14 @@ router.get("/", async (req, res, next) => {
     next();
 }, cartController.getCartItems)
 
+router.delete("/:id", async (req, res, next) => {
+    await connectDB();
+    next();
+}, cartController.deleteCartItem);
+
+router.patch("/:id", async (req, res, next) => {
+    await connectDB();
+    next();
+}, cartController.updateCartItem);
+
 module.exports = router
