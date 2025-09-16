@@ -44,14 +44,20 @@ const addStory = async (req, res) => {
 
 const getStories = async (req, res) => {
   try {
-    const strories = await Story.find({}).sort({ createdAt: -1 });
-    // console.log(strories)
-    if (!strories) {
+    const filter = {};
+
+    if (req.query.status) {
+      filter.status = req.query.status;
+    }
+
+    const stories = await Story.find(filter).sort({ createdAt: -1 });
+
+    if (!stories) {
       return res.status(404).json({
-        message: "stroy not found",
+        message: "Story not found",
       });
     }
-    return res.status(200).json(strories);
+    return res.status(200).json(stories);
   } catch (err) {
     res.status(500).json({
       message: err.message,
@@ -85,4 +91,59 @@ const getStoryById = async (req, res) => {
   }
 };
 
-module.exports = { addStory, getStories, deleteStory, getStoryById };
+const updateStoryStatus = async (req, res) => {
+    try {
+        const { status } = req.body;
+        if (!['accepted', 'rejected'].includes(status)) {
+            return res.status(400).json({ message: "Invalid status provided." });
+        }
+
+        const story = await Story.findByIdAndUpdate(
+            req.params.id,
+            { status },
+            { new: true }
+        );
+
+        if (!story) {
+            return res.status(404).json({ message: "Story not found" });
+        }
+
+        res.status(200).json(story);
+    } catch (err) {
+        res.status(500).json({ message: "Internal server error", error: err.message });
+    }
+};
+
+const updateStory = async (req, res) => {
+  try {
+    const { storyTitle, yourStory, author, tags, date } = req.body;
+    const file = req.file;
+
+    let updateData = { storyTitle, yourStory, author, date, tags: tags ? tags.split(',').map(t => t.trim()) : [] };
+
+    if (file) {
+      const result = await new Promise((resolve, reject) => {
+        const uploadStream = cloudinary.uploader.upload_stream(
+          { resource_type: "auto", folder: "stories" },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        );
+        streamifier.createReadStream(file.buffer).pipe(uploadStream);
+      });
+      updateData.imageOrVideoUrl = result.secure_url;
+    }
+
+    const updatedStory = await Story.findByIdAndUpdate(req.params.id, updateData, { new: true });
+
+    if (!updatedStory) {
+      return res.status(404).json({ message: "Story not found" });
+    }
+    res.status(200).json(updatedStory);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { addStory, getStories, deleteStory, getStoryById, updateStoryStatus, updateStory };

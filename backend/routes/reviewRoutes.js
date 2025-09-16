@@ -12,4 +12,22 @@ router.get(
   reviewController.getReviews
 );
 
+router.patch(
+  "/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  reviewController.updateReview
+);
+
+router.delete(
+  "/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  reviewController.deleteReview
+);
+
 module.exports = router;

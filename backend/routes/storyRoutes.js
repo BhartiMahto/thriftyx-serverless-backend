@@ -32,6 +32,15 @@ router.get(
   storyController.getStoryById
 );
 
+router.patch(
+  "/:id/status",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  storyController.updateStoryStatus
+);
+
 router.delete(
   "/:id",
   async (req, res, next) => {
@@ -39,6 +48,16 @@ router.delete(
     next();
   },
   storyController.deleteStory
+);
+
+router.patch(
+  "/:id",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  upload.single("imageOrVideoUrl"),
+  storyController.updateStory
 );
 
 module.exports = router;
