@@ -22,6 +22,15 @@ const StoryModel = new mongoose.Schema({
       type: [String],
       default: [],
   },
+  date: {
+      type: Date,
+      default: Date.now,
+  },
+  status: {
+      type: String,
+      enum: ['pending', 'accepted', 'rejected'],
+      default: 'pending' 
+  }
 },
 { timestamps: true }
 );
