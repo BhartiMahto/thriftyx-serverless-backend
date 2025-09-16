@@ -147,3 +147,4 @@ const updateStory = async (req, res) => {
 };
 
 module.exports = { addStory, getStories, deleteStory, getStoryById, updateStoryStatus, updateStory };
+3
