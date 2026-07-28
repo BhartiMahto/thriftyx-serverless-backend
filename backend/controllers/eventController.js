@@ -5,7 +5,11 @@ const streamifier = require("streamifier");
 
 const getEvents = async (req, res) => {
   try {
-    const events = await Event.find({});
+    // The list response must stay under AWS Lambda's 6 MB response cap. The
+    // long HTML `instruction` field (~4 MB across all events) is only needed on
+    // the event detail page, so it is excluded here; `GET /api/events/:id`
+    // still returns the full document.
+    const events = await Event.find({}).select("-instruction");
 
     res.status(200).json({ size: events.length, events });
   } catch (err) {

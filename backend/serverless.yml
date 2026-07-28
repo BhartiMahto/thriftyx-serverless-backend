@@ -1,10 +1,94 @@
-org: thriftyx
-service: backend
+# AWS Lambda deployment for the ThriftyX backend (Express via serverless-http).
+#
+# Deploy:  cd backend && npm ci && npx serverless deploy --stage prod
+# Local :  npm run dev            (plain node — recommended)
+#          npm run dev:serverless (API Gateway emulation via serverless-offline)
+#
+# Framework v3 is pinned so no paid licence is required. If you use the
+# Serverless Dashboard, add `org:` / `app:` back and run `serverless login`.
+#
+# Secrets: `useDotenv: true` loads backend/.env at deploy time for the
+# ${env:...} refs below — so keep real values in .env (git-ignored) or export
+# them in your CI. NOTE: AWS_* credentials are NEVER set here — on Lambda the
+# function's IAM role provides them (Lambda forbids AWS_* env vars), and
+# utils/s3.js falls back to that role automatically.
+
+service: thriftyx-backend
+frameworkVersion: '3'
+useDotenv: true
 
 provider:
   name: aws
   runtime: nodejs20.x
-  stage: dev 
+  region: ${env:AWS_REGION, 'ap-south-1'}
+  stage: ${opt:stage, 'prod'}
+  memorySize: 1024
+  # API Gateway caps integration timeout at 29s; PDF work streams to S3 and
+  # returns URLs, so requests stay well under this.
+  timeout: 29
+  httpApi:
+    # CORS is handled by the Express `cors` middleware (it needs to echo the
+    # origin for credentialed requests), so it is deliberately NOT enabled here.
+    cors: false
+  iam:
+    role:
+      statements:
+        # Read/write the documents bucket for gallery + ticket/invoice/pass PDFs.
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+            - s3:ListBucket
+          Resource:
+            - arn:aws:s3:::${env:S3_BUCKET}
+            - arn:aws:s3:::${env:S3_BUCKET}/*
+  environment:
+    MONGO_URI: ${env:MONGO_URI}
+    JWT_SECRET: ${env:JWT_SECRET}
+    CORS_ORIGINS: ${env:CORS_ORIGINS, ''}
+    PAYMENTS_MODE: ${env:PAYMENTS_MODE, 'mock'}
+    OTP_DEBUG: ${env:OTP_DEBUG, 'false'}
+    DEFAULT_COUNTRY_CODE: ${env:DEFAULT_COUNTRY_CODE, '91'}
+    # Storage (bucket only — creds come from the IAM role)
+    S3_BUCKET: ${env:S3_BUCKET}
+    S3_BASE_URL: ${env:S3_BASE_URL, ''}
+    # Payments (Razorpay)
+    RAZORPAY_TEST_KEY: ${env:RAZORPAY_TEST_KEY, ''}
+    RAZORPAY_TEST_SECRET: ${env:RAZORPAY_TEST_SECRET, ''}
+    RAZORPAY_LIVE_KEY: ${env:RAZORPAY_LIVE_KEY, ''}
+    RAZORPAY_SECRET: ${env:RAZORPAY_SECRET, ''}
+    # Auth
+    GOOGLE_CLIENT_ID: ${env:GOOGLE_CLIENT_ID, ''}
+    # Messaging (Twilio + SMTP)
+    TWILIO_ACCOUNT_SID: ${env:TWILIO_ACCOUNT_SID, ''}
+    TWILIO_AUTH_TOKEN: ${env:TWILIO_AUTH_TOKEN, ''}
+    TWILIO_MESSAGING_SERVICE_SID: ${env:TWILIO_MESSAGING_SERVICE_SID, ''}
+    TWILIO_WHATSAPP_OTP_TEMPLATE_SID: ${env:TWILIO_WHATSAPP_OTP_TEMPLATE_SID, ''}
+    SMTP_HOST: ${env:SMTP_HOST, ''}
+    SMTP_PORT: ${env:SMTP_PORT, ''}
+    SMTP_SECURE: ${env:SMTP_SECURE, ''}
+    SMTP_USER: ${env:SMTP_USER, ''}
+    SMTP_PASS: ${env:SMTP_PASS, ''}
+    EMAIL_USER: ${env:EMAIL_USER, ''}
+    EMAIL_PASS: ${env:EMAIL_PASS, ''}
+    # GST tax invoice
+    GST_ENABLED: ${env:GST_ENABLED, 'false'}
+    GST_RATE: ${env:GST_RATE, '18'}
+    INVOICE_PREFIX: ${env:INVOICE_PREFIX, 'INV'}
+    SELLER_LEGAL_NAME: ${env:SELLER_LEGAL_NAME, ''}
+    SELLER_TRADE_NAME: ${env:SELLER_TRADE_NAME, ''}
+    SELLER_GSTIN: ${env:SELLER_GSTIN, ''}
+    SELLER_ADDRESS: ${env:SELLER_ADDRESS, ''}
+    SELLER_STATE: ${env:SELLER_STATE, ''}
+    SELLER_STATE_CODE: ${env:SELLER_STATE_CODE, ''}
+    SELLER_EMAIL: ${env:SELLER_EMAIL, ''}
+    SAC_EVENT: ${env:SAC_EVENT, '998554'}
+    SAC_PLATFORM_FEE: ${env:SAC_PLATFORM_FEE, '998559'}
+    # Golden Pass
+    GOLDEN_PASS_EVENTS: ${env:GOLDEN_PASS_EVENTS, '30'}
+    GOLDEN_PASS_DAYS: ${env:GOLDEN_PASS_DAYS, '365'}
+    GOLDEN_PASS_PRICE: ${env:GOLDEN_PASS_PRICE, '4999'}
 
 plugins:
   - serverless-offline
@@ -13,11 +97,23 @@ custom:
   serverless-offline:
     useStage: false
 
+# Keep the Lambda bundle lean but INCLUDE node_modules — pdfkit ships font
+# `.afm` data files that must be packaged (do not add esbuild bundling, which
+# would drop them).
+package:
+  patterns:
+    - '!.git/**'
+    - '!scripts/**'
+    - '!**/*.log'
+    - '!.env'
+    # Dev-only tooling — not needed in the Lambda runtime, keeps the zip small.
+    - '!node_modules/serverless-offline/**'
+    - '!node_modules/serverless/**'
+    - '!node_modules/aws-sdk/**'
+    - '!.serverless/**'
+
 functions:
   api:
     handler: handler.api
-    timeout: 90
     events:
-      - http:
-          path: /{proxy+}
-          method: any
+      - httpApi: '*'

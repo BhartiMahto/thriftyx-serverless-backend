@@ -21,21 +21,30 @@ const BUCKET = process.env.S3_BUCKET;
 const BASE_URL =
   process.env.S3_BASE_URL || (BUCKET ? `https://${BUCKET}.s3.${REGION}.amazonaws.com/` : null);
 
-const isConfigured = Boolean(
-  process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && BUCKET
-);
+// Two credential sources:
+//   - Local / non-AWS hosts: explicit AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY.
+//   - AWS Lambda: the function's IAM role (the SDK's default provider chain).
+//     Lambda forbids setting AWS_* env vars, so keys are absent there by design.
+// Either way we only need a bucket name to be "configured".
+const hasExplicitKeys = Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+const isConfigured = Boolean(BUCKET);
 
 if (!isConfigured) {
-  console.warn("[s3] AWS credentials or S3_BUCKET not set — S3 uploads are disabled.");
+  console.warn("[s3] S3_BUCKET not set — S3 uploads are disabled.");
 }
 
 const client = isConfigured
   ? new S3Client({
       region: REGION,
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-      },
+      // Omitting credentials lets the SDK fall back to the Lambda role / instance profile.
+      ...(hasExplicitKeys
+        ? {
+            credentials: {
+              accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+              secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+            },
+          }
+        : {}),
     })
   : null;
 
