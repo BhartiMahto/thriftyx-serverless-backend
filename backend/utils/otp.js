@@ -1,91 +1,95 @@
-const axios = require('axios');
-const twilio = require('twilio');
-const nodemailer  = require('nodemailer');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 const { capitalizeText } = require('./capitalizeText');
+const { toWhatsAppAddress } = require('./phone');
+const {
+    client,
+    isConfigured,
+    messagingServiceSid,
+    whatsappOtpTemplateSid,
+} = require('./twilioClient');
 
-const accountSid = 'AC7c8d13036d9dbc79c98bae643f37ca83';
-const authToken = 'cae2cfae739c2b5a70eb5398a1b0663e';
+/**
+ * OTP generation and delivery.
+ *
+ * Twilio credentials, the Mailtrap SMTP password, and the Textlocal API key
+ * were all hardcoded in this file and committed to git. They now come from the
+ * environment. The Textlocal SMS path was dead placeholder code ("thank you for
+ * sending your first test message from Textlocal") and has been removed —
+ * SMS goes through Twilio in utils/sendMessage.js.
+ */
 
-const client = new twilio(accountSid, authToken);
-
+/** Cryptographically random OTP — Math.random() is predictable and unsuitable here. */
 const generateOtp = (otpLength) => {
-    let digits = "0123456789";
     let otp = "";
-    for(let i = 0; i < otpLength; i++) {
-        otp += digits[Math.floor(Math.random()*10)];
+    for (let i = 0; i < otpLength; i++) {
+        otp += crypto.randomInt(0, 10).toString();
     }
     return otp;
-}
-const sendOtpToEmail = async(otp, email, name) => {
+};
 
-    const message = `Dear ${capitalizeText(name)},\n\nYour ThriftyX OTP is ${otp}. Do not share this OTP with anyone.\n\nThanks,\nTeam Thrifty X`;
+let transporter;
+const getTransporter = () => {
+    if (transporter) return transporter;
 
-    const transporter = nodemailer.createTransport({
-        host: 'live.smtp.mailtrap.io',
-        port: 587,
-        secure: false,
+    transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: Number(process.env.SMTP_PORT) || 587,
+        secure: process.env.SMTP_SECURE === 'true',
         auth: {
-            user: 'api',
-            pass: '558f6b5336ec2cf46825fe6e9baec965'
-        }
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS,
+        },
     });
 
-    const mailOptions = {
-        from: 'Thrifty X  no-reply@thriftyx.com',
+    return transporter;
+};
+
+/**
+ * Sends an OTP by email. Resolves on success, rejects on failure — the previous
+ * version used a callback and swallowed errors, so callers reported "OTP sent"
+ * even when nothing was delivered.
+ */
+const sendOtpToEmail = async (otp, email, name) => {
+    if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
+        throw new Error('SMTP is not configured (SMTP_HOST / SMTP_USER)');
+    }
+
+    const message = `Dear ${capitalizeText(name || 'there')},\n\nYour ThriftyX OTP is ${otp}. Do not share this OTP with anyone.\n\nThanks,\nTeam Thrifty X`;
+
+    await getTransporter().sendMail({
+        from: process.env.MAIL_FROM || 'ThriftyX <no-reply@thriftyx.com>',
         to: email,
         subject: 'ThriftyX OTP',
-        text: message 
+        text: message,
+    });
+};
+
+/** Sends an OTP over WhatsApp via Twilio. Rejects if delivery fails. */
+const sendMessageToWhatsapp = async (otp, number) => {
+    if (!isConfigured) {
+        throw new Error('Twilio is not configured (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN)');
+    }
+
+    const to = toWhatsAppAddress(number);
+    if (!to) {
+        throw new Error(`Cannot send WhatsApp OTP: "${number}" is not a usable phone number`);
+    }
+
+    const payload = {
+        to,
+        contentVariables: JSON.stringify({ 1: otp }),
     };
 
-    transporter.sendMail(mailOptions, function(error, info){
-        if (error) {
-            console.log(error);
-        } else {
-            console.log('Email sent: ' + info.response);
-        }
-    });
-}
-const sendMessageAsSMS = async(otp, number) => {
-    const apiKey = "NzQzMzY5NTU1MDRhNzY2Njc2NmQ0MzQ4NzM1MjM0MzA=";
+    if (whatsappOtpTemplateSid) payload.contentSid = whatsappOtpTemplateSid;
+    if (messagingServiceSid) payload.messagingServiceSid = messagingServiceSid;
 
-    const phone = number //array(918123456789, 918987654321);
-    const sender = "600010";
+    const message = await client.messages.create(payload);
+    return message.sid;
+};
 
-    const msg = `Hi there, thank you for sending your first test message from Textlocal. Get 20% off today with our code: ${otp}.`;
-
-    const params = new URLSearchParams();
-
-    params.append("numbers", [parseInt("91" + phone)]);
-    params.append("message", msg);
-
-    try{
-        const httpClient = axios.create({
-            baseURL: "https://api.textlocal.in/",
-            params: {
-                apiKey: apiKey,
-                sender: sender
-            }
-        })
-        const data = await httpClient.post("send", params);
-        console.log("data====>",data.data);
-    }
-    catch(err){
-        console.log("Error===>",err.error);
-    }
-}
-const sendMessageToWhatsapp = async(otp, number) => {
-    await client.messages.create({
-        contentSid: 'HX1fc52a39da832912c836d710b7261d23',
-        messagingServiceSid: "MG2cf4130acb3803d86817286de4b4519f",
-        contentVariables: JSON.stringify({ 1: otp }),
-        to: `whatsapp:+91${number}`
-    })
-    .then(message => console.log(message.sid))
-    .catch(err => console.error("Error sending message:", err));
-}
 module.exports = {
     generateOtp,
     sendOtpToEmail,
-    sendMessageAsSMS,
-    sendMessageToWhatsapp
-}
+    sendMessageToWhatsapp,
+};

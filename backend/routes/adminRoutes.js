@@ -6,16 +6,28 @@ const userController = require("../controllers/userController");
 const faqController = require("../controllers/faqController");
 const supportController = require("../controllers/supportController");
 const founderController = require("../controllers/founderController");
+const membershipController = require("../controllers/membershipController");
 const partnerController = require("../controllers/partnerController");
 const upload = require("../middlewares/uploadImage");
 const connectDB = require("../config/db");
+const { protect } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 
 router.get("/", async (req, res, next) => {
   return res.json({ message: "admin route" });
-  next();
 });
+
+// Every route below requires a valid admin JWT.
+// Previously the whole /api/admin surface (user lists, orders, gallery
+// deletion, bulk mail/SMS) was publicly callable with no authentication.
+router.use(
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  protect
+);
 
 router.get(
   "/events",
@@ -24,6 +36,100 @@ router.get(
     next();
   },
   eventController.getEvents
+);
+
+// --- Cities, blogs, ratings, bookings, customers, support ---
+const content = require("../controllers/adminContentController");
+
+router.get("/cities", content.listCities);
+router.post("/cities", content.createCity);
+router.patch("/cities/:id", content.updateCity);
+router.delete("/cities/:id", content.deleteCity);
+
+router.get("/stories", content.listStories);
+router.patch("/stories/:id/status", content.setStoryStatus);
+router.delete("/stories/:id", content.deleteStory);
+
+router.get("/reviews", content.listReviews);
+router.delete("/reviews/:id", content.deleteReview);
+
+router.get("/support-tickets", content.listSupportTickets);
+router.patch("/support-tickets/:id", content.updateSupportTicket);
+
+router.get("/customers", content.listCustomers);
+router.get("/bookings", content.listBookings);
+
+// --- Coupons ---
+const couponController = require("../controllers/couponController");
+
+router.get("/coupons", couponController.listCoupons);
+router.post("/coupons", couponController.createCoupon);
+router.patch("/coupons/:id", couponController.updateCoupon);
+router.delete("/coupons/:id", couponController.deleteCoupon);
+
+// --- Financial analytics (FinanceInsights / RevenueAnalytics) ---
+const analyticsController = require("../controllers/analyticsController");
+
+router.get("/analytics/summary", analyticsController.getSummary);
+router.get("/analytics/revenue-timeseries", analyticsController.getRevenueTimeseries);
+router.get("/analytics/by-city", analyticsController.getRevenueByCity);
+router.get("/analytics/top-events", analyticsController.getTopEvents);
+router.get("/analytics/ticket-mix", analyticsController.getTicketMix);
+
+// --- Attendees (admin panel: AttendeesTab / CheckInView) ---
+router.get(
+  "/events/:eventId/attendees",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  orderController.getEventAttendees
+);
+
+router.patch(
+  "/attendees/:orderId/check-in",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  orderController.toggleCheckIn
+);
+
+// Confirm or reject a waitlisted application (reject auto-refunds if paid).
+router.patch(
+  "/bookings/:id/decision",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  orderController.decideApplication
+);
+
+// Door check-in: verify a scanned ticket QR token and mark the attendee in.
+router.post(
+  "/tickets/verify",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  orderController.verifyTicketScan
+);
+
+// --- Golden Pass memberships ---
+router.get(
+  "/memberships",
+  async (req, res, next) => { await connectDB(); next(); },
+  membershipController.listMemberships
+);
+router.patch(
+  "/memberships/:id",
+  async (req, res, next) => { await connectDB(); next(); },
+  membershipController.updateMembership
+);
+router.delete(
+  "/memberships/:id",
+  async (req, res, next) => { await connectDB(); next(); },
+  membershipController.revokeMembership
 );
 
 router.get(
@@ -43,6 +149,25 @@ router.post(
   },
   upload.single("image"),
   galleryController.uploadImage
+);
+
+// Browse the S3 bucket and pull existing objects into the gallery.
+router.get(
+  "/gallery/s3",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  galleryController.listS3Objects
+);
+
+router.post(
+  "/gallery/import",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  galleryController.importFromS3
 );
 
 router.delete(
@@ -258,6 +383,7 @@ router.post(
     await connectDB();
     next();
   },
+  upload.single("image"),
   founderController.addFounder
 );
 
@@ -285,6 +411,7 @@ router.patch(
     await connectDB();
     next();
   },
+  upload.single("image"),
   founderController.updateFounder
 );
 

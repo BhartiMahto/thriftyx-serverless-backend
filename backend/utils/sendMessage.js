@@ -1,40 +1,62 @@
-const twilio = require('twilio');
+const { toE164, toWhatsAppAddress } = require("./phone");
+const {
+  client,
+  isConfigured,
+  messagingServiceSid,
+  whatsappOtpTemplateSid,
+  smsFrom,
+} = require("./twilioClient");
 
-const accountSid = 'AC7c8d13036d9dbc79c98bae643f37ca83';
-const authToken = 'cae2cfae739c2b5a70eb5398a1b0663e';
-
-const client = twilio(accountSid, authToken);
+/**
+ * WhatsApp / SMS delivery via Twilio.
+ *
+ * Previously this file created its own Twilio client with the credentials
+ * hardcoded (duplicated from utils/otp.js). It now shares utils/twilioClient.js
+ * and reads everything from the environment.
+ */
 
 const sendWhatsapp = async (phone, message) => {
-  try {
-    const messageInstance = await client.messages.create({
-      contentSid: 'HX1fc52a39da832912c836d710b7261d23',
-      messagingServiceSid: "MG2cf4130acb3803d86817286de4b4519f",
-      contentVariables: JSON.stringify({ 1: message }),
-      to: `whatsapp:+91${phone}`
-    });
-
-    console.log(`WhatsApp message sent to ${phone}: SID ${messageInstance.sid}`);
-  } catch (error) {
-    console.error(`Failed to send WhatsApp message to ${phone}:`, error.message);
-    console.error(error);
-    throw error;
+  if (!isConfigured) {
+    throw new Error("Twilio is not configured (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN)");
   }
+
+  const to = toWhatsAppAddress(phone);
+  if (!to) {
+    throw new Error(`"${phone}" is not a usable phone number`);
+  }
+
+  const payload = { to, contentVariables: JSON.stringify({ 1: message }) };
+  if (whatsappOtpTemplateSid) payload.contentSid = whatsappOtpTemplateSid;
+  if (messagingServiceSid) payload.messagingServiceSid = messagingServiceSid;
+
+  const instance = await client.messages.create(payload);
+  console.log(`WhatsApp message sent to ${to}: SID ${instance.sid}`);
+  return instance.sid;
 };
 
 const sendSMS = async (phone, message) => {
-  try {
-    const response = await client.messages.create({
-      body: message,
-      from: fromPhone,
-      to: phone,
-    });
-
-    console.log(`SMS sent to ${phone}: SID ${response.sid}`);
-  } catch (error) {
-    console.error(`Failed to send SMS to ${phone}:, error.message`);
+  if (!isConfigured) {
+    throw new Error("Twilio is not configured (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN)");
   }
+
+  // The previous implementation referenced an undefined `fromPhone`, so every
+  // call threw a ReferenceError that the catch block then swallowed.
+  if (!smsFrom && !messagingServiceSid) {
+    throw new Error("Set TWILIO_SMS_FROM or TWILIO_MESSAGING_SERVICE_SID to send SMS");
+  }
+
+  const to = toE164(phone);
+  if (!to) {
+    throw new Error(`"${phone}" is not a usable phone number`);
+  }
+
+  const payload = { body: message, to };
+  if (smsFrom) payload.from = smsFrom;
+  else payload.messagingServiceSid = messagingServiceSid;
+
+  const instance = await client.messages.create(payload);
+  console.log(`SMS sent to ${to}: SID ${instance.sid}`);
+  return instance.sid;
 };
 
-
-module.exports = {sendWhatsapp, sendSMS};
+module.exports = { sendWhatsapp, sendSMS };

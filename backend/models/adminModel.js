@@ -5,6 +5,9 @@ const adminSchema = new mongoose.Schema({
   email: { type: String, unique: true, required: true },
   password: { type: String, required: true },
   role: { type: String, enum: ["SUPER_ADMIN", "SUB_ADMIN"], default: "SUB_ADMIN" },
+  // Lets a sub-admin be disabled without deleting the record (and its audit trail).
+  status: { type: String, enum: ["active", "suspended"], default: "active" },
+  lastLoginAt: { type: Date, default: null },
   permissions: [
     {
       module: { type: String },       

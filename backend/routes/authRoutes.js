@@ -57,6 +57,27 @@ router.post(
 );
 
 router.post(
+  "/google",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  AuthController.googleLogin
+);
+
+// Returns the signed-in admin from the database, so the dashboard can refresh
+// a cached profile after a role or permission change.
+router.get(
+  "/admin/me",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  require("../middlewares/authMiddleware").protect,
+  AuthController.adminMe
+);
+
+router.post(
   "/admin/login",
   async (req, res, next) => {
     await connectDB();

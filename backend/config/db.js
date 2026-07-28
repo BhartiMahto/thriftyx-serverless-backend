@@ -1,17 +1,27 @@
 const mongoose = require("mongoose");
 let isConnected;
 
+/** Pulls the database name and host out of a Mongo URI, credentials stripped. */
+const describeUri = (uri = "") => {
+  const m = uri.match(/^mongodb(?:\+srv)?:\/\/(?:[^@]*@)?([^/?]+)\/?([^?]*)/);
+  const host = m ? m[1] : "unknown-host";
+  const db = (m && m[2]) || "(default db)";
+  return { host, db };
+};
+
 const connectDB = async () => {
   if (isConnected) return;
 
-  console.log("Connecting to MongoDB...");
+  const { host, db } = describeUri(process.env.MONGO_URI);
+  console.log(`Connecting to MongoDB → db "${db}" @ ${host}`);
 
   try {
     await mongoose.connect(process.env.MONGO_URI, {
       serverSelectionTimeoutMS: 10000,
     });
     isConnected = true;
-    console.log("MongoDB connected");
+    // Loud so it's never a mystery which database the app is pointed at.
+    console.log(`MongoDB connected → ${db}${/prod/i.test(db) ? "  ⚠️  PRODUCTION" : ""}`);
   } catch (error) {
     console.error("MongoDB connection failed:", error.message);
     throw error;
@@ -19,3 +29,4 @@ const connectDB = async () => {
 };
 
 module.exports = connectDB;
+module.exports.describeUri = describeUri;

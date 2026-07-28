@@ -1,6 +1,6 @@
 const Cart = require("../models/cartModel");
 const User = require("../models/userModel");
-const Event = require("../models/eventModel");
+const Event = require("../models/EventModel");
 
 const addToCart = async (req, res) => {
   const { email, phone, name } = req.body;

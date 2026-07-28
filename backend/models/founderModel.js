@@ -22,6 +22,11 @@ const Founder = new Schema({
         unique: false,
         required: false,
     },
+    order:{
+        type:Number,
+        default:0,
+        required:false
+    },
     createdBy:{
         type:Date,
         unique:false,

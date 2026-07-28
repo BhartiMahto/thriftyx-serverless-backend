@@ -75,6 +75,39 @@ const User = new Schema({
         type:String,
         unique:false,
         required:false
+    },
+    // --- Extended profile (edited from the customer Profile page) ---
+    maritalStatus:{
+        type:String,
+        default:null,
+        required:false
+    },
+    occupation:{
+        type:String,
+        default:null,
+        required:false
+    },
+    reasonToJoin:{
+        type:String,
+        default:null,
+        required:false
+    },
+    bio:{
+        type:String,
+        default:null,
+        required:false
+    },
+    interests:{
+        type:[String],
+        default:[],
+        required:false
+    },
+    // --- Notification preferences (Settings tab) ---
+    notificationPreferences:{
+        email:   { type: Boolean, default: true },
+        whatsapp:{ type: Boolean, default: true },
+        eventReminders: { type: Boolean, default: true },
+        marketing:      { type: Boolean, default: false },
     }
 });
 module.exports = mongoose.model("users",User);

@@ -3,23 +3,26 @@ const router = express.Router();
 const eventController = require("../controllers/eventController");
 const connectDB = require("../config/db");
 const upload = require("../middlewares/uploadImage");
+const { protect } = require("../middlewares/authMiddleware");
 
-router.get(
-  "/",
-  async (req, res, next) => {
-    await connectDB();
-    next();
-  },
-  eventController.getEvents
-);
+const withDb = async (req, res, next) => {
+  await connectDB();
+  next();
+};
 
-router.post(
-  "/",
-  async (req, res, next) => {
-    await connectDB();
-    next();
-  },
-  eventController.createEvent
-);
+/* ---------------- Public reads ---------------- */
+
+router.get("/", withDb, eventController.getEvents);
+router.get("/:id", withDb, eventController.getEventById);
+
+/* ---------------- Admin-only writes ----------------
+ * POST /api/events was previously unauthenticated — anyone could create an
+ * event. All mutations now require an admin JWT.
+ */
+
+router.post("/", withDb, protect, upload.single("image"), eventController.createEvent);
+router.patch("/:id", withDb, protect, eventController.updateEvent);
+router.patch("/:id/status", withDb, protect, eventController.updateEventStatus);
+router.delete("/:id", withDb, protect, eventController.deleteEvent);
 
 module.exports = router;

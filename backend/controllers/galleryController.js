@@ -1,8 +1,13 @@
 const Gallery = require("../models/galleryModel");
-const cloudinary = require("../utils/cloudinary");
-const { Readable } = require("stream");
+const s3 = require("../utils/s3");
 const archiver = require("archiver");
 const axios = require("axios");
+
+/**
+ * Gallery images are stored in S3 (bucket from S3_BUCKET). Records created
+ * before this change hold Cloudinary URLs — those still display fine, and
+ * deleting one removes the database row without touching Cloudinary.
+ */
 
 const getGallery = async (req, res) => {
   try {
@@ -18,23 +23,21 @@ const uploadImage = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded" });
     }
+    if (!s3.isConfigured) {
+      return res.status(503).json({ message: "S3 is not configured on the server" });
+    }
+    if (!String(req.file.mimetype || "").startsWith("image/")) {
+      return res.status(400).json({ message: "Only image files are allowed" });
+    }
+
     const { category, tag } = req.body;
 
-    const result = await new Promise((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream({ folder: "eventImages" }, (error, result) => {
-        if (error) reject(error);
-        else resolve(result);
-      });
-      Readable.from(req.file.buffer).pipe(stream);
+    const { url } = await s3.uploadBuffer(req.file.buffer, {
+      originalName: req.file.originalname,
+      mimetype: req.file.mimetype,
     });
 
-    const newGalleryItem = new Gallery({
-      image: result.secure_url,
-      category: category,
-      tag: tag,
-    });
-
-    const savedGallery = await newGalleryItem.save();
+    const savedGallery = await new Gallery({ image: url, category, tag }).save();
     res.status(201).json(savedGallery);
   } catch (error) {
     console.error("Upload error:", error);
@@ -48,9 +51,117 @@ const deleteImage = async (req, res) => {
     if (!deletedImage) {
       return res.status(404).json({ message: "Image not found to delete" });
     }
-    res.status(200).json({ message: "Image deleted successfully" });
+
+    // The previous version deleted only the database row, orphaning the file in
+    // storage forever. Remove the S3 object too — deleteByUrl returns false for
+    // non-S3 (legacy Cloudinary) URLs rather than throwing.
+    let fileRemoved = false;
+    try {
+      fileRemoved = await s3.deleteByUrl(deletedImage.image);
+    } catch (err) {
+      // The record is already gone; report the orphan rather than failing.
+      console.error("S3 delete failed for", deletedImage.image, err.message);
+    }
+
+    res.status(200).json({
+      message: "Image deleted successfully",
+      fileRemoved,
+      note: fileRemoved ? undefined : "Record removed; the stored file was not on S3.",
+    });
   } catch (err) {
     res.status(500).json({ message: "Internal server error", error: err.message });
+  }
+};
+
+/**
+ * GET /api/admin/gallery/s3 — lists objects in the bucket, flagging which are
+ * already in the gallery. Lets the dashboard pull in files uploaded to S3
+ * outside the app.
+ */
+const listS3Objects = async (req, res) => {
+  try {
+    if (!s3.isConfigured) {
+      return res.status(503).json({ message: "S3 is not configured on the server" });
+    }
+
+    const { prefix = "", token, onlyNew } = req.query;
+    const pageSize = Math.min(Number(req.query.limit) || 60, 200);
+    const imageExt = /\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i;
+
+    const known = new Set((await Gallery.find({}, "image").lean()).map((g) => g.image));
+
+    // The bucket mixes images with ~1000 non-image files (PDFs, tickets), so a
+    // single S3 page can contain almost no images. Keep paging until we've
+    // collected a full page of images rather than returning a near-empty list.
+    const collected = [];
+    let continuationToken = token || undefined;
+    let isTruncated = false;
+    let pagesScanned = 0;
+
+    do {
+      const page = await s3.listObjects({ prefix, maxKeys: 1000, continuationToken });
+      pagesScanned += 1;
+
+      for (const obj of page.objects) {
+        if (!imageExt.test(obj.key)) continue;
+        const inGallery = known.has(obj.url);
+        if (onlyNew === "true" && inGallery) continue;
+        collected.push({ ...obj, inGallery });
+        if (collected.length >= pageSize) break;
+      }
+
+      continuationToken = page.nextToken || undefined;
+      isTruncated = page.isTruncated;
+    } while (collected.length < pageSize && continuationToken && pagesScanned < 10);
+
+    res.status(200).json({
+      objects: collected,
+      nextToken: continuationToken || null,
+      isTruncated,
+      bucket: s3.BUCKET,
+    });
+  } catch (error) {
+    console.error("listS3Objects error:", error);
+    res.status(500).json({ message: "Error listing S3 objects", error: error.message });
+  }
+};
+
+/** POST /api/admin/gallery/import — adds already-in-S3 objects to the gallery. */
+const importFromS3 = async (req, res) => {
+  try {
+    if (!s3.isConfigured) {
+      return res.status(503).json({ message: "S3 is not configured on the server" });
+    }
+
+    const { urls, category, tag } = req.body;
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return res.status(400).json({ message: "urls must be a non-empty array" });
+    }
+
+    // Only accept URLs actually in our bucket — this endpoint must not become a
+    // way to write arbitrary third-party links into the gallery.
+    const valid = urls.filter((u) => s3.keyFromUrl(u));
+    const rejected = urls.length - valid.length;
+
+    const existing = new Set(
+      (await Gallery.find({ image: { $in: valid } }, "image").lean()).map((g) => g.image)
+    );
+    const toCreate = valid.filter((u) => !existing.has(u));
+
+    const created = toCreate.length
+      ? await Gallery.insertMany(toCreate.map((image) => ({ image, category, tag })))
+      : [];
+
+    res.status(201).json({
+      message: "Import complete",
+      imported: created.length,
+      skippedAlreadyPresent: valid.length - toCreate.length,
+      rejectedNotInBucket: rejected,
+      data: created,
+    });
+  } catch (error) {
+    console.error("importFromS3 error:", error);
+    res.status(500).json({ message: "Error importing from S3", error: error.message });
   }
 };
 
@@ -153,4 +264,6 @@ module.exports = {
   setHeroImage,
   unsetHeroImage,
   downloadAllImage,
+  listS3Objects,
+  importFromS3,
 };
