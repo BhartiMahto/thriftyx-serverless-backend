@@ -2,6 +2,7 @@ const Membership = require("../models/membershipModel");
 const Counter = require("../models/counterModel");
 const s3 = require("../utils/s3");
 const { buildPassPdf } = require("../utils/pdf");
+const { createGatewayOrder, verifyGatewaySignature, MOCK_PAYMENTS, RZP_KEY_ID } = require("./paymentController");
 
 /**
  * Golden Pass memberships — a yearly pass of N event credits (default 30),
@@ -14,7 +15,6 @@ const PASS = {
   days: Number(process.env.GOLDEN_PASS_DAYS || 365),
   price: Number(process.env.GOLDEN_PASS_PRICE || 4999),
 };
-const MOCK_PAYMENTS = process.env.PAYMENTS_MODE !== "live";
 
 /** Public-safe shape for the customer + admin UIs. */
 const publicMembership = (m) => ({
@@ -125,8 +125,9 @@ const getMyMembership = async (req, res) => {
 
 /**
  * POST /api/membership/purchase — buy a Golden Pass.
- * Mock mode activates it immediately. For live payments, create the membership
- * as `pending`, run Razorpay, then activate on verify.
+ * Creates a PENDING membership and a Razorpay order; the pass is only activated
+ * after payment is verified (POST /api/membership/verify). In mock mode it
+ * activates immediately (no gateway).
  */
 const purchaseMembership = async (req, res) => {
   try {
@@ -146,28 +147,85 @@ const purchaseMembership = async (req, res) => {
       memberId,
       eventsTotal: PASS.events,
       eventsUsed: 0,
-      status: MOCK_PAYMENTS ? "active" : "pending",
+      status: "pending",
       price: PASS.price,
       city: req.body.city || req.user.city || null,
       startsAt: now,
       expiresAt,
-      payment_id: MOCK_PAYMENTS ? `mock_pass_${seq}` : null,
       createdBy: now,
       updatedBy: now,
     });
 
-    if (membership.status === "active") {
+    // Mock mode → activate straight away (dev only).
+    if (MOCK_PAYMENTS) {
+      membership.status = "active";
+      membership.payment_id = `mock_pass_${seq}`;
       membership.passUrl = await generatePassPdf(membership, req.user);
       await membership.save();
+      return res.status(201).json({
+        message: "Golden Pass activated",
+        data: publicMembership(membership),
+        payment: { mock: true },
+        statusCode: 201,
+      });
     }
 
+    // Real payment: create a Razorpay order for the pass price.
+    const amountInPaise = Math.round(PASS.price * 100);
+    const gateway = await createGatewayOrder(amountInPaise, `PASS-${memberId}`);
+
     return res.status(201).json({
-      message: MOCK_PAYMENTS ? "Golden Pass activated" : "Golden Pass reserved — complete payment",
+      message: "Golden Pass reserved — complete payment",
       data: publicMembership(membership),
+      payment: {
+        paymentOrderId: gateway.paymentOrderId,
+        keyId: RZP_KEY_ID || null,
+        amount: amountInPaise,
+        currency: "INR",
+        mock: false,
+      },
       statusCode: 201,
     });
   } catch (error) {
     console.error("purchaseMembership error:", error);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+/**
+ * POST /api/membership/verify — confirm the Golden Pass payment and activate it.
+ * Body: { membershipId, razorpay_order_id, razorpay_payment_id, razorpay_signature }
+ */
+const verifyMembership = async (req, res) => {
+  try {
+    const { membershipId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    const membership = await Membership.findById(membershipId);
+    if (!membership) return res.status(404).json({ message: "Membership not found", statusCode: 404 });
+    if (String(membership.user_id) !== String(req.user._id)) {
+      return res.status(403).json({ message: "This pass is not yours", statusCode: 403 });
+    }
+    if (membership.status === "active") {
+      return res.status(200).json({ message: "Already active", data: publicMembership(membership), statusCode: 200 });
+    }
+
+    const ok = verifyGatewaySignature({ razorpay_order_id, razorpay_payment_id, razorpay_signature });
+    if (!ok) {
+      return res.status(400).json({ message: "Payment verification failed", statusCode: 400 });
+    }
+
+    membership.status = "active";
+    membership.payment_id = razorpay_payment_id;
+    membership.updatedBy = new Date();
+    membership.passUrl = await generatePassPdf(membership, req.user);
+    await membership.save();
+
+    return res.status(200).json({
+      message: "Golden Pass activated",
+      data: publicMembership(membership),
+      statusCode: 200,
+    });
+  } catch (error) {
+    console.error("verifyMembership error:", error);
     return res.status(500).json({ message: "Server Error", statusCode: 500 });
   }
 };
@@ -258,6 +316,7 @@ const revokeMembership = async (req, res) => {
 module.exports = {
   getMyMembership,
   purchaseMembership,
+  verifyMembership,
   listMemberships,
   updateMembership,
   revokeMembership,

@@ -12,5 +12,6 @@ const withDb = async (req, res, next) => {
 // Customer Golden Pass endpoints.
 router.get("/me", withDb, protectUser, membershipController.getMyMembership);
 router.post("/purchase", withDb, protectUser, membershipController.purchaseMembership);
+router.post("/verify", withDb, protectUser, membershipController.verifyMembership);
 
 module.exports = router;

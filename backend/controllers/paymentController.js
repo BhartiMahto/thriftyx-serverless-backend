@@ -232,4 +232,38 @@ const fetchRefundStatus = async (order) => {
   return r.status;
 };
 
-module.exports = { createPayment, verifyPayment, refundOrderPayment, fetchRefundStatus };
+/**
+ * Reusable gateway helpers so other flows (e.g. Golden Pass) can charge via the
+ * same Razorpay setup without duplicating key/mode logic.
+ */
+async function createGatewayOrder(amountPaise, receipt) {
+  if (MOCK_PAYMENTS) {
+    return { paymentOrderId: `mock_order_${crypto.randomBytes(8).toString("hex")}`, mock: true };
+  }
+  const rzpOrder = await razorpay().orders.create({ amount: amountPaise, currency: "INR", receipt });
+  return { paymentOrderId: rzpOrder.id, mock: false };
+}
+
+/** Constant-time HMAC check of a Razorpay callback. */
+function verifyGatewaySignature({ razorpay_order_id, razorpay_payment_id, razorpay_signature }) {
+  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) return false;
+  const expected = crypto
+    .createHmac("sha256", RZP_SECRET)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+    .digest("hex");
+  return (
+    expected.length === razorpay_signature.length &&
+    crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(razorpay_signature))
+  );
+}
+
+module.exports = {
+  createPayment,
+  verifyPayment,
+  refundOrderPayment,
+  fetchRefundStatus,
+  createGatewayOrder,
+  verifyGatewaySignature,
+  MOCK_PAYMENTS,
+  RZP_KEY_ID,
+};
