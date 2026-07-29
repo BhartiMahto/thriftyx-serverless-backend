@@ -1,5 +1,24 @@
 const PDFDocument = require("pdfkit");
 const QRCode = require("qrcode");
+const fs = require("fs");
+const path = require("path");
+
+/**
+ * Brand logo for the documents. Drop a PNG at backend/assets/logo.png and it's
+ * embedded automatically; if it's missing the PDFs fall back to text so nothing
+ * breaks. Cached after the first read (undefined = unread, null = absent).
+ */
+let _logo;
+function loadLogo() {
+  if (_logo !== undefined) return _logo;
+  try {
+    const p = path.join(__dirname, "..", "assets", "logo.png");
+    _logo = fs.existsSync(p) ? fs.readFileSync(p) : null;
+  } catch {
+    _logo = null;
+  }
+  return _logo;
+}
 
 /**
  * PDF builders for the three customer documents: event ticket, GST tax
@@ -103,8 +122,17 @@ async function buildTicketPdf(t) {
   grad.stop(0, BRAND.green).stop(0.55, BRAND.blue).stop(1, BRAND.purple);
   doc.rect(0, 0, W, 150).fill(grad);
 
+  // Logo in a white chip (so it reads on the gradient regardless of its own
+  // background), with the wordmark beside it. Falls back to text-only.
+  const tLogo = loadLogo();
+  let brandX = 24;
+  if (tLogo) {
+    doc.roundedRect(24, 20, 26, 26, 6).fill("#ffffff");
+    doc.image(tLogo, 27, 23, { fit: [20, 20] });
+    brandX = 24 + 26 + 8;
+  }
   doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(11)
-    .text("✦  IRL SOCIAL", 24, 26, { characterSpacing: 1.5 });
+    .text("IRL SOCIAL HIVE", brandX, 26, { characterSpacing: 1.5 });
   doc.fontSize(23).text(t.event?.name || "Event", 24, 52, { width: W - 48 });
   doc.font("Helvetica").fontSize(10).fillColor("#eef2ff")
     .text("Hosted by ThriftyX", 24, doc.y + 2);
@@ -174,13 +202,16 @@ async function buildInvoicePdf(v) {
   grad.stop(0, BRAND.green).stop(0.55, BRAND.blue).stop(1, BRAND.purple);
   doc.rect(0, 0, W, 6).fill(grad);
 
-  // Seller / title.
+  // Seller / title. Logo (if present) sits to the left of the seller block.
   let y = 40;
-  doc.fillColor(INK).font("Helvetica-Bold").fontSize(16).text(v.seller.legalName, M, y);
+  const iLogo = loadLogo();
+  const sx = iLogo ? M + 48 : M;
+  if (iLogo) doc.image(iLogo, M, y, { fit: [40, 40] });
+  doc.fillColor(INK).font("Helvetica-Bold").fontSize(16).text(v.seller.legalName, sx, y);
   doc.font("Helvetica").fontSize(9).fillColor(MUTED)
-    .text(v.seller.address, M, doc.y + 3, { width: contentW * 0.55 });
+    .text(v.seller.address, sx, doc.y + 3, { width: contentW * 0.55 - 48 });
   if (gstEnabled) {
-    doc.text(`GSTIN: ${v.seller.gstin}  ·  State: ${v.seller.state} (${v.seller.stateCode})`, M, doc.y + 2);
+    doc.text(`GSTIN: ${v.seller.gstin}  ·  State: ${v.seller.state} (${v.seller.stateCode})`, sx, doc.y + 2);
   }
 
   doc.font("Helvetica-Bold").fontSize(18).fillColor(INK)

@@ -14,8 +14,8 @@ const gstConfig = {
   enabled: String(process.env.GST_ENABLED || "").toLowerCase() === "true",
 
   seller: {
-    legalName: process.env.SELLER_LEGAL_NAME || "IRL Social (Legal Entity Pvt Ltd)",
-    tradeName: process.env.SELLER_TRADE_NAME || "IRL Social",
+    legalName: process.env.SELLER_LEGAL_NAME || "IRL Social Hive (Legal Entity Pvt Ltd)",
+    tradeName: process.env.SELLER_TRADE_NAME || "IRL Social Hive",
     gstin: process.env.SELLER_GSTIN || "29ABCDE1234F1Z5", // placeholder
     address:
       process.env.SELLER_ADDRESS ||
