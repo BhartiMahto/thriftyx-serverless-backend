@@ -58,8 +58,17 @@ const createEvent = async (req, res) => {
       status,
     } = req.body;
 
+    // In multipart requests these arrive as JSON strings — parse them back.
+    let parsedTickets = tickets;
+    if (typeof parsedTickets === "string") {
+      try { parsedTickets = JSON.parse(parsedTickets); } catch { parsedTickets = []; }
+    }
+    let parsedCoordinates = coordinates;
+    if (typeof parsedCoordinates === "string") {
+      try { parsedCoordinates = JSON.parse(parsedCoordinates); } catch { parsedCoordinates = {}; }
+    }
+
     const file = req.file;
-    console.log(file)
     if (!file) {
       return res.status(400).json({ message: "File not uploaded" });
     }
@@ -85,17 +94,19 @@ const createEvent = async (req, res) => {
       city,
       venue,
       date,
-      tickets,
+      tickets: parsedTickets,
       min_age,
       max_age,
       venue_name,
       start_time,
       end_time,
-      coordinates,
+      // NOTE: the schema field is misspelled "cordinates".
+      cordinates: parsedCoordinates,
       description,
       instruction,
       status,
       image: result.secure_url,
+      createdBy: new Date(),
     });
 
     const savedEvent = await newEvent.save();

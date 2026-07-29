@@ -53,6 +53,10 @@ provider:
     # Storage (bucket only — creds come from the IAM role)
     S3_BUCKET: ${env:S3_BUCKET}
     S3_BASE_URL: ${env:S3_BASE_URL, ''}
+    # Cloudinary — still used for event images (createEvent/updateEvent)
+    CLOUD_NAME: ${env:CLOUD_NAME, ''}
+    CLOUD_API_KEY: ${env:CLOUD_API_KEY, ''}
+    CLOUD_API_SECRET: ${env:CLOUD_API_SECRET, ''}
     # Payments (Razorpay)
     RAZORPAY_TEST_KEY: ${env:RAZORPAY_TEST_KEY, ''}
     RAZORPAY_TEST_SECRET: ${env:RAZORPAY_TEST_SECRET, ''}
