@@ -20,6 +20,16 @@ router.post(
   AuthController.userLogin
 );
 
+// Unified login/sign-up: one identifier in, returns { isNew, otpType }.
+router.post(
+  "/start",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  AuthController.start
+);
+
 router.post(
   "/verify-code",
   async (req, res, next) => {

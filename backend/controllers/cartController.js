@@ -3,30 +3,12 @@ const User = require("../models/userModel");
 const Event = require("../models/EventModel");
 
 const addToCart = async (req, res) => {
-  const { email, phone, name } = req.body;
-  const lowerCaseEmail = email ? email.toLowerCase() : null;
-
   try {
-    let user = null;
-
-    if (lowerCaseEmail || phone) {
-      const filter = phone ? { phone } : { email: lowerCaseEmail };
-      user = await User.findOne(filter);
-
-      // if (user && user.isVerified) {
-      //   let userUpdateBody = {};
-      //   if (user.name !== name) userUpdateBody.name = name;
-      //   if (user.phone !== phone) userUpdateBody.phone = phone;
-      //   if (user.email !== lowerCaseEmail)
-      //     userUpdateBody.email = lowerCaseEmail;
-      //   if (user.city !== req.body.city) userUpdateBody.city = req.body.city;
-
-      //   if (Object.keys(userUpdateBody).length > 0) {
-      //     await User.updateOne({ _id: user._id }, { $set: userUpdateBody });
-      //   }
-      // }
-    }
-
+    // The cart is created ANONYMOUS. Ownership is assigned at order time by the
+    // authenticated createOrder handler (req.user._id). We deliberately do NOT
+    // guess the user from email/phone here — the database has duplicate emails,
+    // so that lookup could bind the cart to the wrong account and make the
+    // subsequent order fail with "Cart does not belong to user".
     let cartDetails = {
       event_id: req.body.event_id,
       tickets: req.body.tickets,
@@ -34,7 +16,7 @@ const addToCart = async (req, res) => {
       booking_fee: req.body.booking_fee,
       grand_total: req.body.grand_total,
       gst: req.body.gst,
-      user_id: user ? user._id : null,
+      user_id: null,
       createdBy: new Date(),
       isTnC_accepted: req.body.isTnC_accepted,
     };

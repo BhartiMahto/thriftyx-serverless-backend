@@ -550,8 +550,73 @@ const adminLogin = async (req, res) => {
   }
 };
 
+/**
+ * Unified entry point: the user gives just an email or WhatsApp number.
+ * If they already exist we send a login code; if not, we create a bare account
+ * (no name/password — those are collected afterwards) and send a register code.
+ * Returns `isNew` so the frontend can route new users to complete their profile.
+ */
+const start = async (req, res) => {
+  const { email, phone } = req.body;
+  const lowerCaseEmail = email ? email.toLowerCase() : null;
+  const normalisedPhone = phone ? toE164(phone) : null;
+
+  if (!lowerCaseEmail && !normalisedPhone) {
+    return res
+      .status(400)
+      .json({ message: "An email or a WhatsApp number is required", statusCode: 400 });
+  }
+
+  const existing = await findUserByIdentifier({ email: lowerCaseEmail, phone });
+  const fourDigitOtp = generateOtp(4);
+
+  // --- Existing user → login code ---
+  if (existing) {
+    const delivery = await deliverOtp({
+      otp: fourDigitOtp, email: lowerCaseEmail, phone: normalisedPhone, name: existing.name,
+    });
+    if (!delivery.ok) {
+      return res.status(502).json({
+        message: `Could not send the code over ${delivery.channel}. Please try the other option.`,
+        statusCode: 502,
+      });
+    }
+    await User.updateOne({ _id: existing._id }, { $set: { otp: fourDigitOtp } });
+    return res.status(200).json({
+      message: "Code sent", isNew: false, otpType: "login", channel: delivery.channel, statusCode: 200,
+    });
+  }
+
+  // --- New user → create a bare account, then register code ---
+  const token = jwtSignGenerator(normalisedPhone || lowerCaseEmail);
+  const created = await User.create({
+    phone: normalisedPhone,
+    email: lowerCaseEmail,
+    token,
+    otp: fourDigitOtp,
+    createdBy: new Date(),
+    isVerified: false,
+  });
+
+  const delivery = await deliverOtp({
+    otp: fourDigitOtp, email: lowerCaseEmail, phone: normalisedPhone,
+  });
+  if (!delivery.ok) {
+    await User.deleteOne({ _id: created._id }); // don't strand an unverifiable account
+    return res.status(502).json({
+      message: `Could not send the code over ${delivery.channel}. Please try the other option.`,
+      statusCode: 502,
+    });
+  }
+
+  return res.status(201).json({
+    message: "Code sent", isNew: true, otpType: "register", channel: delivery.channel, statusCode: 201,
+  });
+};
+
 module.exports = {
   register,
+  start,
   userLogin,
   verifyCode,
   resendOTP,
