@@ -20,14 +20,16 @@ function signTicket(order, eventEnd) {
   // Valid until the day after the event so late scans still pass.
   const exp = Math.floor((base + DEFAULT_TTL_DAYS * 24 * 3600 * 1000) / 1000);
 
+  // `exp` (unix seconds) goes in the PAYLOAD; do not also pass expiresIn/exp in
+  // options — jsonwebtoken rejects that.
   return jwt.sign(
     {
       t: "ticket",
       oid: String(order._id),
       eid: String(order.event_id?._id || order.event_id || ""),
+      exp,
     },
-    process.env.JWT_SECRET,
-    { expiresIn: undefined, exp }
+    process.env.JWT_SECRET
   );
 }
 

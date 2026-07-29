@@ -23,10 +23,15 @@ const BASE_URL =
 
 // Two credential sources:
 //   - Local / non-AWS hosts: explicit AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY.
-//   - AWS Lambda: the function's IAM role (the SDK's default provider chain).
-//     Lambda forbids setting AWS_* env vars, so keys are absent there by design.
-// Either way we only need a bucket name to be "configured".
-const hasExplicitKeys = Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+//   - AWS Lambda: the function's IAM role via the SDK's default provider chain.
+//
+// IMPORTANT: on Lambda the runtime injects AWS_ACCESS_KEY_ID/SECRET *plus* an
+// AWS_SESSION_TOKEN (the role's temporary creds). If we pass only the id+secret
+// without the token, S3 rejects them ("InvalidAccessKeyId"). So on Lambda we
+// pass NOTHING and let the default chain pick up the full (tokened) creds.
+const onLambda = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+const hasExplicitKeys =
+  !onLambda && Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
 const isConfigured = Boolean(BUCKET);
 
 if (!isConfigured) {
