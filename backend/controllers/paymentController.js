@@ -22,7 +22,25 @@ const Order = require("../models/orderModel");
  * =======================================================================
  */
 
-const MOCK_PAYMENTS = process.env.PAYMENTS_MODE !== "live";
+/**
+ * PAYMENTS_MODE: "mock" (fake, default) | "test" (real Razorpay, test keys) |
+ * "live" (real Razorpay, live keys). "test" and "live" both use the real SDK;
+ * "test" charges nothing (test cards).
+ */
+const MODE = (process.env.PAYMENTS_MODE || "mock").toLowerCase();
+const MOCK_PAYMENTS = MODE !== "test" && MODE !== "live";
+
+// Publishable key id (safe to send to the browser) + secret for the active mode.
+const RZP_KEY_ID = MODE === "live" ? process.env.RAZORPAY_LIVE_KEY : process.env.RAZORPAY_TEST_KEY;
+const RZP_SECRET = MODE === "live" ? process.env.RAZORPAY_SECRET : process.env.RAZORPAY_TEST_SECRET;
+
+let _rzp = null;
+function razorpay() {
+  if (_rzp) return _rzp;
+  const Razorpay = require("razorpay");
+  _rzp = new Razorpay({ key_id: RZP_KEY_ID, key_secret: RZP_SECRET });
+  return _rzp;
+}
 
 /** POST /api/payment/create — starts checkout for an existing order. */
 const createPayment = async (req, res) => {
@@ -49,12 +67,22 @@ const createPayment = async (req, res) => {
 
     // Razorpay works in the smallest currency unit (paise).
     const amountInPaise = Math.round((order.grand_total ?? 0) * 100);
-
-    const paymentOrderId = MOCK_PAYMENTS
-      ? `mock_order_${crypto.randomBytes(8).toString("hex")}`
-      : null; // replaced by razorpay.orders.create(...).id when live
-
     order.receipt_no = order.receipt_no || `RCPT${Date.now()}`;
+
+    // Create the payment order: a real Razorpay order in test/live mode, or a
+    // synthetic id while mocking.
+    let paymentOrderId;
+    if (MOCK_PAYMENTS) {
+      paymentOrderId = `mock_order_${crypto.randomBytes(8).toString("hex")}`;
+    } else {
+      const rzpOrder = await razorpay().orders.create({
+        amount: amountInPaise,
+        currency: "INR",
+        receipt: order.receipt_no,
+      });
+      paymentOrderId = rzpOrder.id;
+    }
+
     order.status = "pending";
     order.updatedBy = new Date();
     await order.save();
@@ -65,8 +93,8 @@ const createPayment = async (req, res) => {
         paymentOrderId,
         amount: amountInPaise,
         currency: "INR",
-        // Never expose RAZORPAY_SECRET — only the publishable key id.
-        keyId: process.env.RAZORPAY_TEST_KEY || null,
+        // Never expose the secret — only the publishable key id.
+        keyId: RZP_KEY_ID || null,
         receipt: order.receipt_no,
         mock: MOCK_PAYMENTS,
       },
@@ -112,7 +140,7 @@ const verifyPayment = async (req, res) => {
       }
 
       const expected = crypto
-        .createHmac("sha256", process.env.RAZORPAY_SECRET)
+        .createHmac("sha256", RZP_SECRET)
         .update(`${razorpay_order_id}|${razorpay_payment_id}`)
         .digest("hex");
 
@@ -182,13 +210,8 @@ const refundOrderPayment = async (order) => {
     };
   }
 
-  // ---- LIVE (unused while mocking) ----
-  const Razorpay = require("razorpay");
-  const rp = new Razorpay({
-    key_id: process.env.RAZORPAY_TEST_KEY,
-    key_secret: process.env.RAZORPAY_SECRET,
-  });
-  const refund = await rp.payments.refund(order.payment_id, { amount: amountPaise, speed: "normal" });
+  // ---- Real refund (test/live) ----
+  const refund = await razorpay().payments.refund(order.payment_id, { amount: amountPaise, speed: "normal" });
   return {
     id: refund.id,
     status: refund.status,
@@ -205,12 +228,7 @@ const fetchRefundStatus = async (order) => {
   if (!order.refund?.id) return null;
   if (MOCK_PAYMENTS) return order.refund.status || "processed";
 
-  const Razorpay = require("razorpay");
-  const rp = new Razorpay({
-    key_id: process.env.RAZORPAY_TEST_KEY,
-    key_secret: process.env.RAZORPAY_SECRET,
-  });
-  const r = await rp.refunds.fetch(order.refund.id);
+  const r = await razorpay().refunds.fetch(order.refund.id);
   return r.status;
 };
 

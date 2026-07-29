@@ -11,7 +11,11 @@
  */
 
 const gstConfig = {
-  enabled: String(process.env.GST_ENABLED || "").toLowerCase() === "true",
+  // A tax invoice legally needs a GSTIN. Until one is set, documents render as a
+  // plain "Payment Receipt" instead of showing an empty/fake GSTIN.
+  enabled:
+    String(process.env.GST_ENABLED || "").toLowerCase() === "true" &&
+    Boolean((process.env.SELLER_GSTIN || "").trim()),
 
   seller: {
     legalName: process.env.SELLER_LEGAL_NAME || "IRL Social Hive (Legal Entity Pvt Ltd)",
