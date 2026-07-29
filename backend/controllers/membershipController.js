@@ -1,7 +1,8 @@
 const Membership = require("../models/membershipModel");
 const Counter = require("../models/counterModel");
 const s3 = require("../utils/s3");
-const { buildPassPdf } = require("../utils/pdf");
+const { buildPassPdf, buildInvoicePdf } = require("../utils/pdf");
+const { gstConfig, financialYear, splitGstAmount } = require("../config/gst");
 const { createGatewayOrder, verifyGatewaySignature, MOCK_PAYMENTS, RZP_KEY_ID } = require("./paymentController");
 
 /**
@@ -13,8 +14,57 @@ const { createGatewayOrder, verifyGatewaySignature, MOCK_PAYMENTS, RZP_KEY_ID } 
 const PASS = {
   events: Number(process.env.GOLDEN_PASS_EVENTS || 30),
   days: Number(process.env.GOLDEN_PASS_DAYS || 365),
-  price: Number(process.env.GOLDEN_PASS_PRICE || 4999),
+  price: Number(process.env.GOLDEN_PASS_PRICE || 6999), // base, pre-tax
 };
+const GST_RATE = Number(process.env.GST_RATE || 18);
+
+/** Base + GST-on-top pricing for the pass (e.g. 6999 + 18% = 8258.82). */
+function passPricing() {
+  const base = PASS.price;
+  const gst = Math.round(base * GST_RATE) / 100;
+  const total = Math.round((base + gst) * 100) / 100;
+  return { base, gst, total };
+}
+
+/** Builds + stores a GST invoice PDF for a pass purchase. Non-fatal. */
+async function generatePassInvoice(membership, user) {
+  if (!s3.isConfigured) return null;
+  try {
+    const { base, gst, total } = passPricing();
+    if (!membership.invoiceNo) {
+      const fy = financialYear(new Date());
+      const seq = await Counter.next(`invoice:${fy}`);
+      membership.invoiceNo = `${gstConfig.invoicePrefix}/${fy}/${String(seq).padStart(5, "0")}`;
+    }
+    // Membership isn't tied to an event location → place of supply = seller state.
+    const tax = splitGstAmount(gst, gstConfig.seller.stateCode);
+    const buffer = await buildInvoicePdf({
+      gstEnabled: gstConfig.enabled,
+      seller: gstConfig.seller,
+      invoiceNo: membership.invoiceNo,
+      dateStr: new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
+      bookingId: membership.memberId,
+      buyer: { name: user?.name || "Member", email: user?.email || null },
+      placeOfSupplyState: gstConfig.seller.state,
+      placeOfSupplyCode: gstConfig.seller.stateCode,
+      lineItems: [{ desc: `Golden Pass — ${membership.eventsTotal} events / 1 year`, sac: gstConfig.sac.event, qty: 1, rate: base, amount: base }],
+      subtotal: base,
+      taxableValue: base,
+      tax,
+      discount: { code: null, amount: 0 },
+      grandTotal: total,
+    });
+    const { url } = await s3.uploadBuffer(buffer, {
+      originalName: `pass-invoice-${membership.memberId}.pdf`,
+      mimetype: "application/pdf",
+      prefix: "invoices/",
+    });
+    return url;
+  } catch (e) {
+    console.error("generatePassInvoice failed:", e.message);
+    return null;
+  }
+}
 
 /** Public-safe shape for the customer + admin UIs. */
 const publicMembership = (m) => ({
@@ -30,6 +80,7 @@ const publicMembership = (m) => ({
   startsAt: m.startsAt,
   expiresAt: m.expiresAt,
   passUrl: m.passUrl || null,
+  invoiceUrl: m.invoiceUrl || null,
   user: m.user_id && m.user_id.name
     ? { _id: m.user_id._id, name: m.user_id.name, email: m.user_id.email, phone: m.user_id.phone }
     : undefined,
@@ -114,7 +165,7 @@ const getMyMembership = async (req, res) => {
       message: "Membership",
       data: m ? publicMembership(m) : null,
       // Pricing so the site can show a purchase CTA when there's no pass.
-      plan: { tier: "golden", events: PASS.events, days: PASS.days, price: PASS.price },
+      plan: (() => { const p = passPricing(); return { tier: "golden", events: PASS.events, days: PASS.days, price: p.base, gst: p.gst, total: p.total }; })(),
       statusCode: 200,
     });
   } catch (error) {
@@ -161,6 +212,7 @@ const purchaseMembership = async (req, res) => {
       membership.status = "active";
       membership.payment_id = `mock_pass_${seq}`;
       membership.passUrl = await generatePassPdf(membership, req.user);
+      membership.invoiceUrl = await generatePassInvoice(membership, req.user);
       await membership.save();
       return res.status(201).json({
         message: "Golden Pass activated",
@@ -170,8 +222,9 @@ const purchaseMembership = async (req, res) => {
       });
     }
 
-    // Real payment: create a Razorpay order for the pass price.
-    const amountInPaise = Math.round(PASS.price * 100);
+    // Real payment: charge base + 18% GST (e.g. 6999 + 1259.82 = 8258.82).
+    const { total } = passPricing();
+    const amountInPaise = Math.round(total * 100);
     const gateway = await createGatewayOrder(amountInPaise, `PASS-${memberId}`);
 
     return res.status(201).json({
@@ -217,6 +270,7 @@ const verifyMembership = async (req, res) => {
     membership.payment_id = razorpay_payment_id;
     membership.updatedBy = new Date();
     membership.passUrl = await generatePassPdf(membership, req.user);
+    membership.invoiceUrl = await generatePassInvoice(membership, req.user);
     await membership.save();
 
     return res.status(200).json({

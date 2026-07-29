@@ -33,7 +33,9 @@ const Membership = new Schema({
   expiresAt: { type: Date, default: null },
 
   payment_id: { type: String, default: null },
-  passUrl: { type: String, default: null }, // S3 PDF
+  passUrl: { type: String, default: null }, // S3 PDF (the pass card)
+  invoiceUrl: { type: String, default: null }, // S3 PDF (GST invoice)
+  invoiceNo: { type: String, default: null },
 
   cancelledAt: { type: Date, default: null },
   createdBy: { type: Date, default: Date.now },
