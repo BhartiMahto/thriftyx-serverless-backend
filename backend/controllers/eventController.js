@@ -68,6 +68,11 @@ const createEvent = async (req, res) => {
       try { parsedCoordinates = JSON.parse(parsedCoordinates); } catch { parsedCoordinates = {}; }
     }
 
+    // Diagnostics: confirm the multipart file actually survived API Gateway.
+    console.log("createEvent hit — file present:", Boolean(req.file),
+      "| content-type:", req.headers["content-type"],
+      "| body keys:", Object.keys(req.body || {}));
+
     const file = req.file;
     if (!file) {
       return res.status(400).json({ message: "File not uploaded" });
@@ -113,6 +118,7 @@ const createEvent = async (req, res) => {
 
     res.status(201).json(savedEvent);
   } catch (err) {
+    console.error("createEvent error:", err);
     res.status(500).json({ message: err.message });
   }
 };
