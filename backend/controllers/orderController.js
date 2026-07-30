@@ -4,43 +4,50 @@ const Event = require("../models/EventModel");
 const Coupon = require("../models/couponModel");
 const { evaluateCoupon } = require("./couponController");
 const { refundOrderPayment, fetchRefundStatus } = require("./paymentController");
-const { ensureTicket, ensureInvoice } = require("../utils/documents");
+const { ensureTicket, ensureInvoice, attendeesOf } = require("../utils/documents");
 const { verifyTicket } = require("../utils/ticketToken");
 const { consumeCredit, refundCredit } = require("./membershipController");
 
 /**
- * Maps an Order (with user_id/event_id populated) to the flat `Attendee` shape
- * the admin panel renders. Kept in one place so the contract can't drift.
+ * Maps an Order to ONE flat `Attendee` row PER PERSON on the booking. A
+ * 2-ticket order yields two rows so the host sees and checks in each guest
+ * individually. Row id is `${orderId}:${index}` so the check-in endpoint can
+ * target a single attendee. Kept in one place so the contract can't drift.
  */
-const toAttendee = (order) => {
+const toAttendeeRows = (order) => {
   const ticketNames = Array.isArray(order.tickets)
     ? order.tickets.map((t) => t?.name).filter(Boolean)
     : [];
+  const ticketType = ticketNames.join(", ") || "—";
+  const people = attendeesOf(order);
+  const total = people.length;
 
-  // Prefer what was entered at checkout; fall back to the account profile.
-  const details = order.attendee_details || {};
-
-  return {
-    id: String(order._id),
+  return people.map((p, i) => ({
+    // Composite id: order + attendee index. Single-person orders still read
+    // cleanly (index 0).
+    id: `${order._id}:${i}`,
     orderId: order.order_id || null,
-    name: details.name || order.user_id?.name || null,
-    email: details.email || order.user_id?.email || null,
-    phone: details.phone || order.user_id?.phone || null,
-    gender: details.gender || order.user_id?.gender || null,
-    age: details.age ?? null,
-    maritalStatus: details.maritalStatus || order.user_id?.maritalStatus || null,
-    reasonToJoin: details.reasonToJoin || order.user_id?.reasonToJoin || null,
-    ticketType: ticketNames.join(", ") || "—",
+    seat: i + 1,
+    partySize: total,
+    name: p.name || order.user_id?.name || null,
+    email: p.email || order.attendee_details?.email || order.user_id?.email || null,
+    phone: p.phone || order.attendee_details?.phone || order.user_id?.phone || null,
+    gender: p.gender || order.user_id?.gender || null,
+    age: p.age ?? null,
+    maritalStatus: p.maritalStatus || null,
+    reasonToJoin: p.reasonToJoin || null,
+    ticketType: total > 1 ? `${ticketType} (${i + 1}/${total})` : ticketType,
     // Admin shows a binary paid/unpaid; backend tracks a 4-state order status.
     paymentStatus: order.status === "completed" ? "paid" : "unpaid",
     orderStatus: order.status,
     registrationDate: order.createdBy || null,
-    checkedIn: Boolean(order.checkedIn),
-    checkedInAt: order.checkedInAt || null,
+    // Per-attendee check-in; falls back to the order flag for legacy orders.
+    checkedIn: Boolean(p.checkedIn ?? order.checkedIn),
+    checkedInAt: p.checkedInAt || order.checkedInAt || null,
     city: order.event_id?.city || order.user_id?.city || null,
     venue: order.event_id?.venue_name || order.event_id?.venue || null,
     grandTotal: order.grand_total ?? 0,
-  };
+  }));
 };
 
 /** POST /api/order — customer places an order from a cart item. */
@@ -48,7 +55,28 @@ const createOrder = async (req, res) => {
   // Held outside the try so the catch can hand a spent pass credit back.
   let claimedPass = null;
   try {
-    const { cart_item_id, isTnC_accepted, attendee_details, couponCode } = req.body;
+    const { cart_item_id, isTnC_accepted, attendee_details, attendees, couponCode } = req.body;
+
+    // Normalise the per-attendee list. New checkout sends `attendees` (one per
+    // ticket); older callers send a single `attendee_details`. Either way we
+    // store both: `attendees[]` for per-person check-in, `attendee_details` for
+    // the booker/invoice.
+    const cleanAttendee = (a) => ({
+      name: a?.name ?? null,
+      email: a?.email ?? null,
+      phone: a?.phone ?? null,
+      gender: a?.gender ?? null,
+      age: a?.age ?? null,
+      DOB: a?.DOB ?? null,
+      city: a?.city ?? null,
+      maritalStatus: a?.maritalStatus ?? null,
+      reasonToJoin: a?.reasonToJoin ? String(a.reasonToJoin).trim().slice(0, 1000) : null,
+    });
+    const attendeeList = Array.isArray(attendees) && attendees.length
+      ? attendees.map(cleanAttendee)
+      : attendee_details
+        ? [cleanAttendee(attendee_details)]
+        : [];
 
     if (!cart_item_id) {
       return res.status(400).json({ message: "cart_item_id is required", statusCode: 400 });
@@ -74,10 +102,19 @@ const createOrder = async (req, res) => {
       return res.status(404).json({ message: "Event not found", statusCode: 404 });
     }
 
-    // Golden Pass: if the customer has a usable credit, this booking is FREE and
-    // auto-confirmed (skips the waitlist). Claimed atomically so concurrent
-    // bookings can't overspend the pass. Coupons are ignored when a pass covers.
+    // How many tickets on this booking (a pass covers only ONE — the holder's).
+    const qty = Array.isArray(cart.tickets)
+      ? cart.tickets.reduce((n, t) => n + (Number(t.count ?? t.quantity ?? 1) || 1), 0)
+      : 1;
+
+    // Golden Pass: covers the HOLDER's own seat only. Claimed atomically so
+    // concurrent bookings can't overspend the pass. Coupons are ignored when a
+    // pass is in play.
+    //   • Solo booking (qty 1)  → fully free + auto-confirmed (skips waitlist).
+    //   • With friends (qty >1) → holder's seat free, the remaining seats are
+    //     paid and go through the waitlist like any booking.
     claimedPass = await consumeCredit(req.user._id);
+    const passCoversWholeOrder = Boolean(claimedPass) && qty <= 1;
 
     // Coupon is re-validated and the discount recomputed HERE from the cart's
     // own subtotal — a client-sent discount is never trusted. Usage is recorded
@@ -109,9 +146,11 @@ const createOrder = async (req, res) => {
       }
     }
 
-    // Pass-covered bookings cost nothing and are confirmed immediately; all
-    // others follow the normal pay-then-waitlist flow.
-    const grandTotal = claimedPass
+    // A fully pass-covered (solo) booking costs nothing and is confirmed
+    // immediately. A pass-with-friends booking is a normal paid order for the
+    // friends' seats (the holder's seat was already excluded from the cart
+    // amounts by the client) and follows the pay-then-waitlist flow.
+    const grandTotal = passCoversWholeOrder
       ? 0
       : Math.max(0, Math.round((cart.grand_total - discount) * 100) / 100);
 
@@ -119,32 +158,27 @@ const createOrder = async (req, res) => {
       user_id: req.user._id,
       event_id: cart.event_id,
       tickets: cart.tickets,
-      total_price: claimedPass ? 0 : cart.total_price,
-      booking_fee: claimedPass ? 0 : cart.booking_fee,
-      gst: claimedPass ? 0 : cart.gst,
+      total_price: passCoversWholeOrder ? 0 : cart.total_price,
+      booking_fee: passCoversWholeOrder ? 0 : cart.booking_fee,
+      gst: passCoversWholeOrder ? 0 : cart.gst,
       coupon_code: appliedCode,
       discount,
       grand_total: grandTotal,
+      // membership_id is set whenever a credit was spent (solo OR the free seat
+      // of a group booking) so the credit can be handed back on cancel/reject.
       membership_id: claimedPass ? claimedPass._id : null,
-      paidByPass: Boolean(claimedPass),
-      status: claimedPass ? "completed" : "in_progress",
-      applicationStatus: claimedPass ? "confirmed" : "waitlist",
+      // paidByPass only for the fully-free solo booking; a group booking still
+      // collects money for the friends' seats.
+      paidByPass: passCoversWholeOrder,
+      // True when a pass covered ONE seat of a paid group booking.
+      passSeat: Boolean(claimedPass) && !passCoversWholeOrder,
+      status: passCoversWholeOrder ? "completed" : "in_progress",
+      applicationStatus: passCoversWholeOrder ? "confirmed" : "waitlist",
       isTnC_accepted: true,
-      attendee_details: attendee_details
-        ? {
-            name: attendee_details.name ?? null,
-            email: attendee_details.email ?? null,
-            phone: attendee_details.phone ?? null,
-            gender: attendee_details.gender ?? null,
-            age: attendee_details.age ?? null,
-            DOB: attendee_details.DOB ?? null,
-            city: attendee_details.city ?? null,
-            maritalStatus: attendee_details.maritalStatus ?? null,
-            reasonToJoin: attendee_details.reasonToJoin
-              ? String(attendee_details.reasonToJoin).trim().slice(0, 1000)
-              : null,
-          }
-        : undefined,
+      // Booker / invoice "bill to" = the first attendee.
+      attendee_details: attendeeList[0] || undefined,
+      // Full per-person list (one QR + one check-in each).
+      attendees: attendeeList,
       order_id: `THX${Date.now()}${Math.floor(Math.random() * 1000)}`,
       createdBy: new Date(),
       updatedBy: new Date(),
@@ -152,8 +186,9 @@ const createOrder = async (req, res) => {
 
     await Cart.findByIdAndDelete(cart_item_id);
 
-    // A free pass booking is already paid + confirmed → issue the ticket now.
-    if (claimedPass) {
+    // A fully pass-covered (solo) booking is already paid + confirmed → issue
+    // the ticket now. A group booking waits for payment + host confirmation.
+    if (passCoversWholeOrder) {
       try {
         await ensureTicket(order);
       } catch (docErr) {
@@ -162,12 +197,14 @@ const createOrder = async (req, res) => {
     }
 
     return res.status(201).json({
-      message: claimedPass ? "Booking confirmed with your Golden Pass" : "Order Created",
+      message: passCoversWholeOrder ? "Booking confirmed with your Golden Pass" : "Order Created",
       data: {
         _id: order._id,
         order_id: order.order_id,
         status: order.status,
-        paidByPass: Boolean(claimedPass),
+        paidByPass: passCoversWholeOrder,
+        // Signals the client that a pass covered one seat of a paid group booking.
+        passSeat: Boolean(claimedPass) && !passCoversWholeOrder,
         applicationStatus: order.applicationStatus,
         ticket_url: order.ticket_url || null,
       },
@@ -271,12 +308,16 @@ const cancelOrder = async (req, res) => {
     order.status = "cancelled";
     order.cancelledAt = new Date();
     order.updatedBy = new Date();
-    await order.save();
 
-    // Pass-covered booking → hand the credit back to the membership.
-    if (order.paidByPass && order.membership_id) {
+    // Hand any spent pass credit back (solo pass booking OR the free seat of a
+    // paid group booking). Null the id (persisted below) so it can't be
+    // refunded twice by a later transition.
+    if (order.membership_id) {
       try { await refundCredit(order.membership_id); } catch (e) { console.error("credit refund failed:", e.message); }
+      order.membership_id = null;
     }
+
+    await order.save();
 
     // NOTE: for paid (money) bookings no refund is issued here — payments are
     // mocked. Wire a real Razorpay refund call when live payments are added.
@@ -335,6 +376,14 @@ const getOrderTicket = async (req, res) => {
           email: details.email || req.user.email || null,
           phone: details.phone || req.user.phone || null,
         },
+        // Per-person list so the booker sees each guest and who's checked in.
+        attendees: attendeesOf(order).map((p, i) => ({
+          seat: i + 1,
+          name: p.name || null,
+          gender: p.gender || null,
+          age: p.age ?? null,
+          checkedIn: Boolean(p.checkedIn),
+        })),
         event: {
           name: event.name || null,
           date: event.date || null,
@@ -410,25 +459,40 @@ const verifyTicketScan = async (req, res) => {
       return res.status(409).json({ message: "Ticket is not valid for entry", valid: false, statusCode: 409 });
     }
 
-    const alreadyIn = Boolean(order.checkedIn);
+    // Ensure the attendees array exists (migrate legacy single-attendee orders).
+    if (!Array.isArray(order.attendees) || !order.attendees.length) {
+      order.attendees = attendeesOf(order).map((p) => ({ ...(p.toObject ? p.toObject() : p) }));
+    }
+    const idx = Number.isInteger(decoded.ai) && decoded.ai >= 0 && decoded.ai < order.attendees.length
+      ? decoded.ai
+      : 0;
+    const person = order.attendees[idx];
+
+    const alreadyIn = Boolean(person.checkedIn);
+    const now = new Date();
     if (!alreadyIn) {
-      order.checkedIn = true;
-      order.checkedInAt = new Date();
-      order.updatedBy = new Date();
+      person.checkedIn = true;
+      person.checkedInAt = now;
+      order.checkedIn = order.attendees.every((a) => a.checkedIn);
+      order.checkedInAt = order.checkedIn ? now : order.checkedInAt;
+      order.updatedBy = now;
       await order.save();
     }
 
-    const details = order.attendee_details || {};
+    const inCount = order.attendees.filter((a) => a.checkedIn).length;
     return res.status(200).json({
       message: alreadyIn ? "Already checked in" : "Checked in",
       valid: true,
       alreadyCheckedIn: alreadyIn,
       data: {
         orderId: order.order_id,
-        attendee: { name: details.name || null, phone: details.phone || null },
+        attendee: { name: person.name || null, phone: person.phone || null },
+        // Which guest this QR is and party progress, e.g. "Guest 2 of 3".
+        guest: `${idx + 1} of ${order.attendees.length}`,
+        partyCheckedIn: `${inCount}/${order.attendees.length}`,
         ticket: Array.isArray(order.tickets) ? order.tickets.map((t) => t?.name).filter(Boolean).join(", ") : "",
         event: order.event_id?.name || null,
-        checkedInAt: order.checkedInAt,
+        checkedInAt: person.checkedInAt,
       },
       statusCode: 200,
     });
@@ -483,12 +547,20 @@ const decideApplication = async (req, res) => {
     order.reviewedAt = new Date();
     order.rejectionReason = reason ? String(reason).trim().slice(0, 500) : null;
 
-    // Pass-covered booking → return the credit rather than refunding money.
-    if (order.paidByPass && order.membership_id) {
+    // Hand back the pass credit if one was spent on this booking (a solo
+    // pass booking OR the free seat of a paid group booking). Null the id so a
+    // later transition can't double-refund it.
+    if (order.membership_id) {
       try { await refundCredit(order.membership_id); } catch (e) { console.error("credit refund failed:", e.message); }
+      order.membership_id = null;
+    }
+
+    if (order.paidByPass) {
+      // Fully pass-covered — no money to refund, only the credit (done above).
       order.refund = { id: null, status: "credit_returned", amount: 0, at: new Date() };
     } else if (order.status === "completed" && !order.refund?.id) {
-      // Auto-refund a paid application. Unpaid ones just get rejected.
+      // Auto-refund a paid application (incl. the friends' seats of a group
+      // booking). Unpaid ones just get rejected.
       try {
         const refund = await refundOrderPayment(order);
         order.refund = refund;
@@ -569,7 +641,7 @@ const getEventAttendees = async (req, res) => {
 
     return res.status(200).json({
       message: "Attendees",
-      data: orders.map(toAttendee),
+      data: orders.flatMap(toAttendeeRows),
       statusCode: 200,
     });
   } catch (error) {
@@ -578,27 +650,54 @@ const getEventAttendees = async (req, res) => {
   }
 };
 
-/** PATCH /api/admin/attendees/:orderId/check-in — flips check-in state. */
+/**
+ * PATCH /api/admin/attendees/:orderId/check-in — flips one attendee's check-in
+ * state. Body: { checkedIn?, attendeeIndex? }. The orderId may arrive as a
+ * composite "orderId:index" (matching the attendee row id); an explicit
+ * `attendeeIndex` in the body wins over that.
+ */
 const toggleCheckIn = async (req, res) => {
   try {
     const { checkedIn } = req.body;
-    const order = await Order.findById(req.params.orderId);
+    // Accept the index from the body, or parse it off a composite "id:index".
+    const [rawId, idxFromId] = String(req.params.orderId).split(":");
+    const idx = Number.isInteger(req.body.attendeeIndex)
+      ? req.body.attendeeIndex
+      : (idxFromId !== undefined ? Number(idxFromId) : 0);
 
+    const order = await Order.findById(rawId);
     if (!order) {
       return res.status(404).json({ message: "Order not found", statusCode: 404 });
     }
 
-    order.checkedIn = typeof checkedIn === "boolean" ? checkedIn : !order.checkedIn;
-    order.checkedInAt = order.checkedIn ? new Date() : null;
-    order.updatedBy = new Date();
+    // Ensure the attendees array exists (migrate legacy single-attendee orders).
+    if (!Array.isArray(order.attendees) || !order.attendees.length) {
+      order.attendees = attendeesOf(order).map((p) => ({ ...(p.toObject ? p.toObject() : p) }));
+    }
+    if (idx < 0 || idx >= order.attendees.length) {
+      return res.status(400).json({ message: "Invalid attendee", statusCode: 400 });
+    }
+
+    const now = new Date();
+    const target = order.attendees[idx];
+    const next = typeof checkedIn === "boolean" ? checkedIn : !target.checkedIn;
+    target.checkedIn = next;
+    target.checkedInAt = next ? now : null;
+
+    // Order-level flag = every attendee is in (keeps existing UI/analytics sane).
+    order.checkedIn = order.attendees.every((a) => a.checkedIn);
+    order.checkedInAt = order.checkedIn ? now : null;
+    order.updatedBy = now;
     await order.save();
 
     await order.populate("user_id", "name email city phone");
     await order.populate("event_id", "name type city venue venue_name");
 
+    // Return the single row that changed.
+    const row = toAttendeeRows(order)[idx];
     return res.status(200).json({
       message: "Check-in updated",
-      data: toAttendee(order),
+      data: row,
       statusCode: 200,
     });
   } catch (error) {

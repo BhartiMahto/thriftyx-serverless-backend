@@ -13,6 +13,17 @@ const { gstConfig, financialYear, splitGstAmount, stateForCity } = require("../c
  * succeeds; the document is retried next time the customer opens it.
  */
 
+/**
+ * The list of people on an order, one per ticket. Uses the `attendees` array
+ * when present; otherwise falls back to the single `attendee_details` (older
+ * orders / single-ticket bookings) so every code path has at least one.
+ */
+function attendeesOf(order) {
+  if (Array.isArray(order.attendees) && order.attendees.length) return order.attendees;
+  if (order.attendee_details && order.attendee_details.name) return [order.attendee_details];
+  return [{ name: null }];
+}
+
 /** Human ticket label from the order's ticket lines, e.g. "Premium · Qty 2". */
 function ticketLabel(order) {
   const lines = Array.isArray(order.tickets) ? order.tickets : [];
@@ -42,11 +53,18 @@ async function ensureTicket(order) {
     await order.populate("event_id", "name date start_time venue venue_name city");
   }
   const event = order.event_id || {};
-  const details = order.attendee_details || {};
 
-  const token = signTicket(order, event.date);
+  // One ticket page per attendee. Fall back to the single booker for older
+  // (pre-multi-attendee) orders that only have attendee_details.
+  const people = attendeesOf(order);
+  const attendees = people.map((p, i) => ({
+    name: p.name || null,
+    qrToken: signTicket(order, event.date, i),
+    status: p.checkedIn ? "checked_in" : "confirmed",
+  }));
+
   const buffer = await buildTicketPdf({
-    qrToken: token,
+    attendees,
     event: {
       name: event.name,
       date: event.date,
@@ -55,7 +73,6 @@ async function ensureTicket(order) {
       city: event.city,
     },
     ticketLabel: ticketLabel(order),
-    attendee: details.name || null,
     bookingId: order.order_id || String(order._id).slice(-8).toUpperCase(),
     status: order.checkedIn ? "checked_in" : "confirmed",
   });
@@ -156,4 +173,4 @@ async function ensureInvoice(order) {
   return url;
 }
 
-module.exports = { ensureTicket, ensureInvoice, ticketLabel };
+module.exports = { ensureTicket, ensureInvoice, ticketLabel, attendeesOf };

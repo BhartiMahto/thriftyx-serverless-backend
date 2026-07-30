@@ -14,8 +14,9 @@ const DEFAULT_TTL_DAYS = 2;
 /**
  * @param {Object} order   an Order document (needs _id, event_id)
  * @param {Date}   [eventEnd]  event end/date used to set expiry
+ * @param {number} [attendeeIndex=0]  which attendee on the order this QR admits
  */
-function signTicket(order, eventEnd) {
+function signTicket(order, eventEnd, attendeeIndex = 0) {
   const base = eventEnd ? new Date(eventEnd).getTime() : Date.now();
   // Valid until the day after the event so late scans still pass.
   const exp = Math.floor((base + DEFAULT_TTL_DAYS * 24 * 3600 * 1000) / 1000);
@@ -27,6 +28,9 @@ function signTicket(order, eventEnd) {
       t: "ticket",
       oid: String(order._id),
       eid: String(order.event_id?._id || order.event_id || ""),
+      // `ai` = attendee index; identifies which person on a multi-ticket order
+      // this QR admits, so each is checked in individually.
+      ai: Number(attendeeIndex) || 0,
       exp,
     },
     process.env.JWT_SECRET

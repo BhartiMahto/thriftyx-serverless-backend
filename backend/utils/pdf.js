@@ -108,14 +108,9 @@ function inrWords(amount) {
 
 /* ================================= TICKET ================================= */
 
-/**
- * @param {Object} t
- * @param {string} t.qrToken   signed ticket token (goes in the QR)
- */
-async function buildTicketPdf(t) {
+/** Draws one ticket page for a single attendee onto an existing doc. */
+function drawTicketPage(doc, t, attendee, png) {
   const W = 340;
-  const doc = new PDFDocument({ size: [W, 560], margin: 0 });
-  const png = await qrPng(t.qrToken, 300);
 
   // Header band with the brand gradient.
   const grad = doc.linearGradient(0, 0, W, 150);
@@ -153,12 +148,14 @@ async function buildTicketPdf(t) {
   const timeStr = t.event?.startTime ? ` · ${t.event.startTime}` : "";
   row("When", `${dateStr}${timeStr}`);
   row("Where", [t.event?.venue, t.event?.city].filter(Boolean).join(", ") || "Venue TBA");
-  row("Ticket", t.ticketLabel || "General");
+  // Ticket line shows "General · Guest 2 of 3" for multi-attendee bookings.
+  const seat = attendee.total > 1 ? ` · Guest ${attendee.seat} of ${attendee.total}` : "";
+  row("Ticket", `${t.ticketLabel || "General"}${seat}`);
 
   // Attendee + booking id, two columns.
   doc.fillColor(MUTED).font("Helvetica").fontSize(8.5).text("ATTENDEE", 24, y);
   doc.fillColor(MUTED).text("BOOKING ID", W / 2 + 6, y);
-  doc.fillColor(INK).font("Helvetica-Bold").fontSize(13).text(t.attendee || "—", 24, y + 11, { width: W / 2 - 30 });
+  doc.fillColor(INK).font("Helvetica-Bold").fontSize(13).text(attendee.name || "—", 24, y + 11, { width: W / 2 - 30 });
   doc.font("Courier-Bold").fontSize(13).text(t.bookingId || "—", W / 2 + 6, y + 11, { width: W / 2 - 30 });
   y += 52;
 
@@ -171,10 +168,11 @@ async function buildTicketPdf(t) {
 
   // Stub: status pill + QR.
   y += 22;
-  const confirmed = t.status === "confirmed";
-  const pillText = confirmed ? "● CONFIRMED" : t.status === "checked_in" ? "● CHECKED IN" : "● PENDING";
-  const pillColor = confirmed ? "#15803d" : t.status === "checked_in" ? BRAND.blue : "#b45309";
-  const pillBg = confirmed ? "#dcfce7" : t.status === "checked_in" ? "#dbeafe" : "#fef3c7";
+  const status = attendee.status || t.status;
+  const confirmed = status === "confirmed";
+  const pillText = confirmed ? "● CONFIRMED" : status === "checked_in" ? "● CHECKED IN" : "● PENDING";
+  const pillColor = confirmed ? "#15803d" : status === "checked_in" ? BRAND.blue : "#b45309";
+  const pillBg = confirmed ? "#dcfce7" : status === "checked_in" ? "#dbeafe" : "#fef3c7";
 
   doc.fillColor(MUTED).font("Helvetica").fontSize(9).text("SHOW THIS AT ENTRY", 24, y);
   const pw = doc.widthOfString(pillText) + 20;
@@ -183,7 +181,30 @@ async function buildTicketPdf(t) {
 
   doc.roundedRect(W - 24 - 96, y, 96, 96, 10).fill("#ffffff").strokeColor(LINE).lineWidth(1).stroke();
   doc.image(png, W - 24 - 96 + 6, y + 6, { width: 84, height: 84 });
+}
 
+/**
+ * Builds the ticket PDF. One page per attendee — each with its own QR so it can
+ * be scanned/checked-in individually.
+ *
+ * @param {Object} t
+ * @param {Array}  [t.attendees]  [{ name, qrToken, status }] — one per person.
+ * @param {string} [t.qrToken]    single-attendee fallback (legacy shape).
+ * @param {string} [t.attendee]   single-attendee name (legacy shape).
+ */
+async function buildTicketPdf(t) {
+  const W = 340;
+  // Normalise to an attendees array so single- and multi-attendee share a path.
+  const people = Array.isArray(t.attendees) && t.attendees.length
+    ? t.attendees
+    : [{ name: t.attendee, qrToken: t.qrToken, status: t.status }];
+
+  const doc = new PDFDocument({ size: [W, 560], margin: 0 });
+  for (let i = 0; i < people.length; i++) {
+    if (i > 0) doc.addPage({ size: [W, 560], margin: 0 });
+    const png = await qrPng(people[i].qrToken, 300);
+    drawTicketPage(doc, t, { ...people[i], seat: i + 1, total: people.length }, png);
+  }
   return renderToBuffer(doc);
 }
 

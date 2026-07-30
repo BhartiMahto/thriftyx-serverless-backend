@@ -159,6 +159,15 @@ const Order = new Schema({
     // Details of the person actually attending, captured at checkout.
     // Held on the order (not just the user) because they are point-in-time
     // facts — age in particular — and the admin attendee table displays them.
+    // True when a Golden Pass covered ONE seat of a paid group booking (the
+    // holder's). paidByPass (below) stays false because money was still taken
+    // for the friends' seats.
+    passSeat: {
+        type: Boolean,
+        default: false,
+        required: false
+    },
+    // The booker/primary attendee (also the invoice "bill to"). Mirrors attendees[0].
     attendee_details: {
         name: { type: String, default: null },
         email: { type: String, default: null },
@@ -172,6 +181,21 @@ const Order = new Schema({
         // Why the attendee wants to join THIS event — used by hosts to curate the waitlist.
         reasonToJoin: { type: String, default: null },
     },
+    // One entry PER TICKET when the booking covers more than one person. Each
+    // gets its own QR (a ticket-PDF page) and is checked in individually.
+    attendees: [{
+        name: { type: String, default: null },
+        email: { type: String, default: null },
+        phone: { type: String, default: null },
+        gender: { type: String, default: null },
+        age: { type: Number, default: null },
+        DOB: { type: Date, default: null },
+        city: { type: String, default: null },
+        maritalStatus: { type: String, default: null },
+        reasonToJoin: { type: String, default: null },
+        checkedIn: { type: Boolean, default: false },
+        checkedInAt: { type: Date, default: null },
+    }],
     // --- Attendee's rating of the event (given from My Tickets after it's over) ---
     rating: {
         type: Number,
