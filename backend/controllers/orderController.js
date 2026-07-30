@@ -29,6 +29,7 @@ const toAttendee = (order) => {
     gender: details.gender || order.user_id?.gender || null,
     age: details.age ?? null,
     maritalStatus: details.maritalStatus || order.user_id?.maritalStatus || null,
+    reasonToJoin: details.reasonToJoin || order.user_id?.reasonToJoin || null,
     ticketType: ticketNames.join(", ") || "—",
     // Admin shows a binary paid/unpaid; backend tracks a 4-state order status.
     paymentStatus: order.status === "completed" ? "paid" : "unpaid",
@@ -136,8 +137,12 @@ const createOrder = async (req, res) => {
             phone: attendee_details.phone ?? null,
             gender: attendee_details.gender ?? null,
             age: attendee_details.age ?? null,
+            DOB: attendee_details.DOB ?? null,
             city: attendee_details.city ?? null,
             maritalStatus: attendee_details.maritalStatus ?? null,
+            reasonToJoin: attendee_details.reasonToJoin
+              ? String(attendee_details.reasonToJoin).trim().slice(0, 1000)
+              : null,
           }
         : undefined,
       order_id: `THX${Date.now()}${Math.floor(Math.random() * 1000)}`,

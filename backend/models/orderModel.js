@@ -165,8 +165,12 @@ const Order = new Schema({
         phone: { type: String, default: null },
         gender: { type: String, default: null },
         age: { type: Number, default: null },
+        // Date of birth as entered at checkout (as per government ID).
+        DOB: { type: Date, default: null },
         city: { type: String, default: null },
         maritalStatus: { type: String, default: null },
+        // Why the attendee wants to join THIS event — used by hosts to curate the waitlist.
+        reasonToJoin: { type: String, default: null },
     },
     // --- Attendee's rating of the event (given from My Tickets after it's over) ---
     rating: {
