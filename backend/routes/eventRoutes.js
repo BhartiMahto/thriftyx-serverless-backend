@@ -13,6 +13,8 @@ const withDb = async (req, res, next) => {
 /* ---------------- Public reads ---------------- */
 
 router.get("/", withDb, eventController.getEvents);
+// More specific route first so "going" isn't captured by "/:id".
+router.get("/:id/going", withDb, eventController.getEventGoing);
 router.get("/:id", withDb, eventController.getEventById);
 
 /* ---------------- Admin-only writes ----------------

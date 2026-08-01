@@ -1,7 +1,72 @@
 const { Reject } = require("twilio/lib/twiml/VoiceResponse");
 const Event = require("../models/EventModel");
+const Order = require("../models/orderModel");
 const cloudinary = require("../utils/cloudinary");
 const streamifier = require("streamifier");
+
+/** Age in whole years from a DOB, or null. */
+const ageFromDob = (dob) => {
+  if (!dob) return null;
+  const born = new Date(dob);
+  if (Number.isNaN(born.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - born.getFullYear();
+  const m = now.getMonth() - born.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < born.getDate())) age -= 1;
+  return age >= 0 && age < 150 ? age : null;
+};
+
+/** Neutral third-person label from a stored gender — never a name. */
+const pronounFor = (gender) => {
+  switch (String(gender || "").toLowerCase()) {
+    case "male": return "He";
+    case "female": return "She";
+    default: return "They";
+  }
+};
+
+/**
+ * GET /api/events/:id/going — PUBLIC, anonymised list of people attending an
+ * event, for social proof on the detail page. Returns only { pronoun, age,
+ * reasonToJoin } — never names, contact, or ids — so it's privacy-safe to show
+ * to anyone. Draws from paid (or pass-covered) bookings that aren't cancelled
+ * or rejected, one entry per attendee.
+ */
+const getEventGoing = async (req, res) => {
+  try {
+    const orders = await Order.find({
+      event_id: req.params.id,
+      status: "completed",
+      applicationStatus: { $ne: "rejected" },
+    })
+      .select("attendees attendee_details")
+      .sort({ createdBy: -1 })
+      .lean();
+
+    const people = [];
+    for (const o of orders) {
+      const list = Array.isArray(o.attendees) && o.attendees.length
+        ? o.attendees
+        : (o.attendee_details ? [o.attendee_details] : []);
+      for (const p of list) {
+        const reason = (p.reasonToJoin || "").trim();
+        people.push({
+          pronoun: pronounFor(p.gender),
+          age: p.age ?? ageFromDob(p.DOB),
+          reasonToJoin: reason || null,
+        });
+      }
+    }
+
+    res.status(200).json({ message: "Going", data: { count: people.length, people }, statusCode: 200 });
+  } catch (err) {
+    if (err.name === "CastError") {
+      return res.status(200).json({ message: "Going", data: { count: 0, people: [] }, statusCode: 200 });
+    }
+    console.error("getEventGoing error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
 
 const getEvents = async (req, res) => {
   try {
@@ -240,6 +305,7 @@ const deleteEvent = async (req, res) => {
 module.exports = {
   getEvents,
   getEventById,
+  getEventGoing,
   createEvent,
   updateEvent,
   updateEventStatus,
