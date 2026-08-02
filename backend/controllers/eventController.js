@@ -3,6 +3,9 @@ const Event = require("../models/EventModel");
 const Order = require("../models/orderModel");
 const cloudinary = require("../utils/cloudinary");
 const streamifier = require("streamifier");
+const { refundOrderPayment } = require("./paymentController");
+const { refundCredit } = require("./membershipController");
+const { notifyOrder, niceDate, SUPPORT } = require("../utils/notify");
 
 /** Age in whole years from a DOB, or null. */
 const ageFromDob = (dob) => {
@@ -36,10 +39,16 @@ const getEventGoing = async (req, res) => {
   try {
     const orders = await Order.find({
       event_id: req.params.id,
-      status: "completed",
-      applicationStatus: { $ne: "rejected" },
+      // Only people who are actually still coming:
+      status: "completed",              // paid (excludes cancelled / unpaid)
+      applicationStatus: { $ne: "rejected" }, // not turned away by a host
+      "refund.id": null,                // no money refund issued
+      "refund.at": null,                // no refund/credit action of any kind
     })
-      .select("attendees attendee_details")
+      .select("attendees attendee_details user_id")
+      // Account profile is the fallback for a reason/gender/age the booking omits
+      // (e.g. older bookings made before the per-event reason existed).
+      .populate("user_id", "reasonToJoin gender DOB")
       .sort({ createdBy: -1 })
       .lean();
 
@@ -48,14 +57,16 @@ const getEventGoing = async (req, res) => {
       const list = Array.isArray(o.attendees) && o.attendees.length
         ? o.attendees
         : (o.attendee_details ? [o.attendee_details] : []);
-      for (const p of list) {
-        const reason = (p.reasonToJoin || "").trim();
+      list.forEach((p, i) => {
+        // Only the booker (first attendee) can borrow from the account profile.
+        const acct = i === 0 ? (o.user_id || {}) : {};
+        const reason = (p.reasonToJoin || acct.reasonToJoin || "").trim();
         people.push({
-          pronoun: pronounFor(p.gender),
-          age: p.age ?? ageFromDob(p.DOB),
+          pronoun: pronounFor(p.gender || acct.gender),
+          age: p.age ?? ageFromDob(p.DOB || acct.DOB),
           reasonToJoin: reason || null,
         });
-      }
+      });
     }
 
     res.status(200).json({ message: "Going", data: { count: people.length, people }, statusCode: 200 });
@@ -302,6 +313,133 @@ const deleteEvent = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /api/admin/events/:id/reschedule — move a WHOLE event to a new date/time.
+ * Every booking references this event, so they all follow automatically (their
+ * tickets/attendees are untouched). Body: { date, start_time?, end_time? }.
+ */
+const rescheduleEvent = async (req, res) => {
+  try {
+    const { date, start_time, end_time } = req.body;
+    if (!date) return res.status(400).json({ message: "date is required", statusCode: 400 });
+
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.status(404).json({ message: "Event not found", statusCode: 404 });
+
+    event.date = new Date(date);
+    if (start_time !== undefined) event.start_time = start_time;
+    if (end_time !== undefined) event.end_time = end_time;
+    await event.save();
+
+    // Bookings reference the event, so they move with it. Notify every member.
+    const orders = await Order.find({ event_id: event._id, status: "completed" })
+      .populate("user_id", "email phone name");
+    const affectedBookings = orders.length;
+
+    const when = niceDate(event.date) + (event.start_time ? ` at ${event.start_time}` : "");
+    const body =
+      `Hi! "${event.name || "Your event"}" has been rescheduled to ${when}` +
+      `${event.city ? ` in ${event.city}` : ""}. Your booking is still valid — no action needed. ` +
+      `Questions? ${SUPPORT}\n— IRL Social Hive`;
+    // Fire notifications in parallel, best-effort.
+    await Promise.allSettled(orders.map((o) =>
+      notifyOrder(o, { subject: `Event rescheduled — ${event.name || "IRL Social Hive"}`, body })
+    ));
+
+    return res.status(200).json({
+      message: "Event rescheduled",
+      data: {
+        _id: event._id,
+        date: event.date,
+        start_time: event.start_time,
+        end_time: event.end_time,
+        affectedBookings,
+      },
+      statusCode: 200,
+    });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    console.error("rescheduleEvent error:", err);
+    return res.status(500).json({ message: "Internal server error", statusCode: 500 });
+  }
+};
+
+/**
+ * POST /api/admin/events/:id/cancel — cancel a whole event and REFUND every
+ * member: money bookings via Razorpay, Golden Pass bookings by returning the
+ * credit. Each order is marked cancelled. Idempotent per order (won't refund a
+ * booking that already has a refund).
+ */
+const cancelEvent = async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.status(404).json({ message: "Event not found", statusCode: 404 });
+
+    // Every paid booking still standing for this event.
+    const orders = await Order.find({ event_id: event._id, status: "completed" })
+      .populate("user_id", "email phone name");
+
+    let moneyRefunded = 0, creditsReturned = 0, failed = 0;
+    for (const o of orders) {
+      // Money refund (skip pass-covered, zero-value, or already-refunded ones).
+      if (!o.paidByPass && (o.grand_total ?? 0) > 0 && o.payment_id && !o.refund?.id) {
+        try { o.refund = await refundOrderPayment(o); moneyRefunded++; }
+        catch (e) {
+          console.error("event-cancel refund failed:", e.message);
+          o.refund = { id: null, status: "failed", amount: o.grand_total ?? 0, at: new Date() };
+          failed++;
+        }
+      }
+      // Pass credit back.
+      if (o.membership_id) {
+        try { await refundCredit(o.membership_id); creditsReturned++; o.membership_id = null; }
+        catch (e) { console.error("event-cancel credit refund failed:", e.message); }
+      }
+      o.status = "cancelled";
+      o.cancelledAt = new Date();
+      o.updatedBy = new Date();
+      await o.save();
+    }
+
+    event.status = "Cancelled";
+    await event.save();
+
+    // Tell every member the event is off and their refund is on the way.
+    const refundLine = (o) =>
+      o.paidByPass
+        ? "Your Golden Pass credit has been returned."
+        : (o.grand_total ?? 0) > 0
+          ? "Your payment is being refunded to your original payment method."
+          : "";
+    await Promise.allSettled(orders.map((o) =>
+      notifyOrder(o, {
+        subject: `Event cancelled — ${event.name || "IRL Social Hive"}`,
+        body:
+          `Hi, we're sorry — "${event.name || "your event"}"${event.city ? ` in ${event.city}` : ""} ` +
+          `has been cancelled. ${refundLine(o)} Refunds can take 5–7 business days. ` +
+          `Questions? ${SUPPORT}\n— IRL Social Hive`,
+      })
+    ));
+
+    return res.status(200).json({
+      message: "Event cancelled and members refunded",
+      data: {
+        _id: event._id,
+        status: event.status,
+        cancelledBookings: orders.length,
+        moneyRefunded,
+        creditsReturned,
+        failed,
+      },
+      statusCode: 200,
+    });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    console.error("cancelEvent error:", err);
+    return res.status(500).json({ message: "Internal server error", statusCode: 500 });
+  }
+};
+
 module.exports = {
   getEvents,
   getEventById,
@@ -310,4 +448,6 @@ module.exports = {
   updateEvent,
   updateEventStatus,
   deleteEvent,
+  rescheduleEvent,
+  cancelEvent,
 };

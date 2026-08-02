@@ -44,6 +44,16 @@ router.patch(
   orderController.cancelOrder
 );
 
+router.patch(
+  "/:id/reschedule",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  protectUser,
+  orderController.rescheduleOrder
+);
+
 router.get(
   "/:id/refund-status",
   async (req, res, next) => {

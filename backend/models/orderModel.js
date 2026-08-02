@@ -154,6 +154,9 @@ const Order = new Schema({
         id: { type: String, default: null },
         status: { type: String, default: null },   // e.g. processed / pending / failed
         amount: { type: Number, default: null },
+        // Bank reference (RRN/UTR/ARN) from Razorpay — what the customer quotes
+        // to their bank to trace the refund. Populated when the gateway returns it.
+        rrn: { type: String, default: null },
         at: { type: Date, default: null },
     },
     // Details of the person actually attending, captured at checkout.

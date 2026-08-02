@@ -3,10 +3,14 @@ const Cart = require("../models/cartModel");
 const Event = require("../models/EventModel");
 const Coupon = require("../models/couponModel");
 const { evaluateCoupon } = require("./couponController");
-const { refundOrderPayment, fetchRefundStatus } = require("./paymentController");
+const {
+  refundOrderPayment, fetchRefundStatus,
+  createGatewayOrder, verifyGatewaySignature, RZP_KEY_ID,
+} = require("./paymentController");
 const { ensureTicket, ensureInvoice, attendeesOf } = require("../utils/documents");
 const { verifyTicket } = require("../utils/ticketToken");
 const { consumeCredit, refundCredit } = require("./membershipController");
+const { notifyOrder, niceDate, SUPPORT } = require("../utils/notify");
 
 /**
  * Maps an Order to ONE flat `Attendee` row PER PERSON on the booking. A
@@ -305,6 +309,7 @@ const cancelOrder = async (req, res) => {
         .json({ message: "Cannot cancel after check-in", statusCode: 409 });
     }
 
+    const wasPaid = order.status === "completed";
     order.status = "cancelled";
     order.cancelledAt = new Date();
     order.updatedBy = new Date();
@@ -317,13 +322,75 @@ const cancelOrder = async (req, res) => {
       order.membership_id = null;
     }
 
+    // Auto-refund a paid (money) booking on self-cancel, provided it's before
+    // the refund cutoff (REFUND_CUTOFF_HOURS before the event starts). Because
+    // the CUSTOMER is backing out, the non-refundable 5% platform fee is
+    // retained; we refund (grand total − platform fee). After the cutoff the
+    // seat is still released, but no automatic refund is issued.
+    const REFUND_CUTOFF_HOURS = 24;
+    const round2 = (n) => Math.round(n * 100) / 100;
+    const platformFee = order.booking_fee ?? 0;
+    const refundAmount = round2((order.grand_total ?? 0) - platformFee);
+    let refundNote = null;
+    const eligibleForMoneyRefund =
+      wasPaid && !order.paidByPass && refundAmount > 0 &&
+      order.payment_id && !order.refund?.id;
+
+    if (eligibleForMoneyRefund) {
+      let evDate = null;
+      try {
+        await order.populate("event_id", "date");
+        evDate = order.event_id?.date ? new Date(order.event_id.date) : null;
+      } catch { /* no event date → treat as refundable */ }
+      const cutoff = evDate ? evDate.getTime() - REFUND_CUTOFF_HOURS * 3600 * 1000 : Infinity;
+      const beforeCutoff = Date.now() < cutoff;
+
+      if (beforeCutoff) {
+        try {
+          // Partial refund: retain the 5% platform fee.
+          order.refund = await refundOrderPayment(order, refundAmount);
+          refundNote = `We retain the 5% platform fee (₹${platformFee}); ₹${refundAmount} is being refunded.`;
+        } catch (e) {
+          console.error("cancel refund failed:", e.message);
+          order.refund = { id: null, status: "failed", amount: refundAmount, at: new Date() };
+          refundNote = "Refund could not be initiated automatically — our team will process it.";
+        }
+      } else {
+        refundNote = `Cancelled within ${REFUND_CUTOFF_HOURS}h of the event — no automatic refund. Contact support if you think this is a mistake.`;
+      }
+    }
+
     await order.save();
 
-    // NOTE: for paid (money) bookings no refund is issued here — payments are
-    // mocked. Wire a real Razorpay refund call when live payments are added.
+    // Confirmation message to the customer (best-effort).
+    try {
+      await order.populate("user_id", "email phone name");
+      await order.populate("event_id", "name");
+      const ev = order.event_id?.name ? ` for "${order.event_id.name}"` : "";
+      let body;
+      if (order.refund?.id && order.refund?.status !== "failed") {
+        const ref = order.refund.rrn || order.refund.id;
+        body =
+          `Your booking${ev} has been cancelled. We retain the 5% platform fee (₹${platformFee}); ` +
+          `₹${order.refund.amount} is being refunded to your original payment method (ref ${ref}), ` +
+          `usually within 5–7 business days. Questions? ${SUPPORT}\n— IRL Social Hive`;
+      } else {
+        body =
+          `Your booking${ev} has been cancelled. ${refundNote || ""} Questions? ${SUPPORT}\n— IRL Social Hive`;
+      }
+      await notifyOrder(order, { subject: `Booking cancelled — ${order.event_id?.name || "IRL Social Hive"}`, body });
+    } catch (e) { console.error("cancel notify:", e.message); }
+
     return res.status(200).json({
       message: "Booking cancelled",
-      data: { _id: order._id, status: order.status, cancelledAt: order.cancelledAt },
+      data: {
+        _id: order._id,
+        status: order.status,
+        cancelledAt: order.cancelledAt,
+        platformFeeRetained: eligibleForMoneyRefund ? platformFee : 0,
+        refund: order.refund?.id || order.refund?.status ? order.refund : null,
+        refundNote,
+      },
       statusCode: 200,
     });
   } catch (error) {
@@ -873,6 +940,216 @@ const avgSpend = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /api/order/:id/reschedule — move a paid booking to another upcoming
+ * occurrence of the same event. Recomputes the total on the new date:
+ *   • cheaper/equal → move now (auto-refund any difference)
+ *   • costs more    → returns { needsPayment, payment } so the client collects
+ *     the difference via Razorpay, then calls again with the razorpay_* fields.
+ * The moved booking re-enters the waitlist for the new date's host approval.
+ * Body: { eventId, razorpay_order_id?, razorpay_payment_id?, razorpay_signature? }
+ */
+const rescheduleOrder = async (req, res) => {
+  try {
+    const { eventId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    if (!eventId) return res.status(400).json({ message: "eventId is required", statusCode: 400 });
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: "Order not found", statusCode: 404 });
+    if (String(order.user_id) !== String(req.user._id)) {
+      return res.status(403).json({ message: "This booking is not yours", statusCode: 403 });
+    }
+    if (order.status !== "completed") {
+      return res.status(409).json({ message: "Only a paid booking can be rescheduled", statusCode: 409 });
+    }
+    if (order.applicationStatus === "rejected") {
+      return res.status(409).json({ message: "A rejected booking can't be rescheduled", statusCode: 409 });
+    }
+    if (order.checkedIn) {
+      return res.status(409).json({ message: "Cannot reschedule after check-in", statusCode: 409 });
+    }
+    if (String(order.event_id) === String(eventId)) {
+      return res.status(400).json({ message: "Pick a different date", statusCode: 400 });
+    }
+
+    const target = await Event.findById(eventId);
+    if (!target) return res.status(404).json({ message: "That event was not found", statusCode: 404 });
+    const tDate = target.date ? new Date(target.date) : null;
+    if (tDate && tDate.getTime() <= Date.now()) {
+      return res.status(400).json({ message: "That date has already passed", statusCode: 400 });
+    }
+
+    // Paid seats on this order (a pass-covered holder seat is free).
+    const qty = Array.isArray(order.tickets)
+      ? order.tickets.reduce((n, t) => n + (Number(t.count ?? t.quantity ?? 1) || 1), 0)
+      : 1;
+    const paidSeats = order.paidByPass ? 0 : (order.passSeat ? Math.max(0, qty - 1) : qty);
+
+    // Unit price on the target: same ticket name if present, else the cheapest.
+    const wantName = order.tickets?.[0]?.name;
+    const tTickets = Array.isArray(target.tickets) ? target.tickets : [];
+    const priceOf = (t) => Number(t?.price) || 0;
+    let unit = 0;
+    if (tTickets.length) {
+      const match = tTickets.find((t) => t.name === wantName);
+      unit = match ? priceOf(match) : Math.min(...tTickets.map(priceOf));
+    }
+
+    const round2 = (n) => Math.round(n * 100) / 100;
+    const newTotalPrice = round2(unit * paidSeats);
+    const newFee = round2(newTotalPrice * 0.05);
+    const newGst = round2(newTotalPrice * 0.18);
+    const newGrand = round2(newTotalPrice + newFee + newGst);
+    const oldGrand = order.grand_total ?? 0;
+    const diff = round2(newGrand - oldGrand);
+    const diffPaise = Math.round(Math.abs(diff) * 100);
+
+    // Costs more → collect the difference first (unless mock mode).
+    if (diff > 0) {
+      if (!razorpay_order_id) {
+        const pay = await createGatewayOrder(diffPaise, `resched_${String(order._id).slice(-10)}`);
+        if (!pay.mock) {
+          return res.status(200).json({
+            message: "Payment required",
+            data: {
+              needsPayment: true,
+              priceDiff: diff,
+              newTotal: newGrand,
+              payment: { paymentOrderId: pay.paymentOrderId, amount: diffPaise, currency: "INR", keyId: RZP_KEY_ID, mock: false },
+            },
+            statusCode: 200,
+          });
+        }
+        // mock mode → fall through and just move.
+      } else {
+        const ok = verifyGatewaySignature({ razorpay_order_id, razorpay_payment_id, razorpay_signature });
+        if (!ok) return res.status(400).json({ message: "Payment verification failed", statusCode: 400 });
+      }
+    }
+
+    // Cheaper → refund the difference to the original payment.
+    if (diff < 0 && order.payment_id && !order.paidByPass) {
+      try {
+        order.refund = await refundOrderPayment(order, Math.abs(diff));
+      } catch (e) {
+        console.error("reschedule refund failed:", e.message);
+      }
+    }
+
+    // Move the seat. The booking keeps its current approval state — a confirmed
+    // booking stays confirmed for the new date (no re-approval needed). Reset
+    // check-in and clear the generated docs so the ticket/invoice regenerate for
+    // the new date on next view.
+    order.event_id = eventId;
+    order.total_price = newTotalPrice;
+    order.booking_fee = newFee;
+    order.gst = newGst;
+    order.grand_total = newGrand;
+    order.checkedIn = false;
+    order.checkedInAt = null;
+    order.ticket_url = null;
+    order.invoice_url = null;
+    order.invoice_no = null;
+    order.updatedBy = new Date();
+    await order.save();
+
+    // Confirmation message to the customer (best-effort).
+    try {
+      await order.populate("user_id", "email phone name");
+      const when = niceDate(target.date) + (target.start_time ? ` at ${target.start_time}` : "");
+      let priceLine = "";
+      if (diff > 0) priceLine = ` The ₹${diff} difference was collected.`;
+      else if (diff < 0 && order.refund?.id) {
+        const ref = order.refund.rrn || order.refund.id;
+        priceLine = ` ₹${Math.abs(diff)} is being refunded (ref ${ref}).`;
+      }
+      await notifyOrder(order, {
+        subject: `Booking rescheduled — ${target.name || "IRL Social Hive"}`,
+        body:
+          `Your booking has been moved to "${target.name || "your event"}" on ${when}` +
+          `${target.city ? ` in ${target.city}` : ""}.${priceLine} Questions? ${SUPPORT}\n— IRL Social Hive`,
+      });
+    } catch (e) { console.error("reschedule notify:", e.message); }
+
+    return res.status(200).json({
+      message: "Booking rescheduled",
+      data: {
+        _id: order._id,
+        event_id: eventId,
+        grand_total: newGrand,
+        applicationStatus: order.applicationStatus,
+        rescheduled: true,
+      },
+      statusCode: 200,
+    });
+  } catch (err) {
+    console.error("rescheduleOrder error:", err);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+/**
+ * PATCH /api/admin/bookings/:id/refund — admin refunds a single booking and
+ * cancels it (frees the seat, drops it off "Who's coming"). Refunds money via
+ * Razorpay and returns any Golden Pass credit. Idempotent: refuses if already
+ * refunded.
+ */
+const refundBooking = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: "Booking not found", statusCode: 404 });
+    if (order.refund?.id) {
+      return res.status(409).json({ message: "This booking is already refunded", statusCode: 409 });
+    }
+
+    let refund = null;
+    if (!order.paidByPass && (order.grand_total ?? 0) > 0 && order.payment_id) {
+      try {
+        refund = await refundOrderPayment(order);
+        order.refund = refund;
+      } catch (e) {
+        console.error("refundBooking failed:", e.message);
+        return res.status(502).json({ message: "Refund failed at the payment gateway", statusCode: 502 });
+      }
+    }
+
+    // Return any Golden Pass credit spent on this booking.
+    if (order.membership_id) {
+      try { await refundCredit(order.membership_id); } catch (e) { console.error("credit refund failed:", e.message); }
+      order.membership_id = null;
+    }
+
+    order.status = "cancelled";
+    order.cancelledAt = new Date();
+    order.updatedBy = new Date();
+    await order.save();
+
+    // Let the member know their booking was refunded.
+    try {
+      await order.populate("user_id", "email phone name");
+      await order.populate("event_id", "name");
+      const amt = order.refund?.amount;
+      const ref = order.refund?.rrn || order.refund?.id;
+      await notifyOrder(order, {
+        subject: `Refund processed — ${order.event_id?.name || "IRL Social Hive"}`,
+        body:
+          `Hi, your booking${order.event_id?.name ? ` for "${order.event_id.name}"` : ""} has been cancelled and refunded` +
+          `${amt ? ` (₹${amt})` : ""}${ref ? `, ref ${ref}` : ""}. Refunds can take 5–7 business days. ` +
+          `Questions? ${SUPPORT}\n— IRL Social Hive`,
+      });
+    } catch (e) { console.error("refund notify:", e.message); }
+
+    return res.status(200).json({
+      message: "Booking refunded",
+      data: { _id: order._id, status: order.status, refund: order.refund || null },
+      statusCode: 200,
+    });
+  } catch (err) {
+    console.error("refundBooking error:", err);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
 module.exports = {
   getAllOrders,
   customerCount,
@@ -886,6 +1163,8 @@ module.exports = {
   decideApplication,
   getRefundStatus,
   cancelOrder,
+  rescheduleOrder,
+  refundBooking,
   getOrderTicket,
   getTicketPdf,
   getInvoicePdf,

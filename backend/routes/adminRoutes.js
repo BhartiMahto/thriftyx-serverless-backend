@@ -105,6 +105,26 @@ router.patch(
   orderController.decideApplication
 );
 
+// Refund + cancel a single booking.
+router.patch(
+  "/bookings/:id/refund",
+  async (req, res, next) => { await connectDB(); next(); },
+  orderController.refundBooking
+);
+
+// Reschedule a whole event (moves all its bookings) / cancel an event and
+// refund every member.
+router.patch(
+  "/events/:id/reschedule",
+  async (req, res, next) => { await connectDB(); next(); },
+  eventController.rescheduleEvent
+);
+router.post(
+  "/events/:id/cancel",
+  async (req, res, next) => { await connectDB(); next(); },
+  eventController.cancelEvent
+);
+
 // Door check-in: verify a scanned ticket QR token and mark the attendee in.
 router.post(
   "/tickets/verify",

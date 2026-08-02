@@ -198,24 +198,33 @@ const verifyPayment = async (req, res) => {
  *
  * Returns { id, status, amount, at }. Safe to call only on a completed order.
  */
-const refundOrderPayment = async (order) => {
-  const amountPaise = Math.round((order.grand_total ?? 0) * 100);
+const refundOrderPayment = async (order, amountRupeesOverride) => {
+  // Full refund by default; a partial amount (e.g. a reschedule price drop) may
+  // be passed explicitly.
+  const amountRupees = amountRupeesOverride != null ? amountRupeesOverride : (order.grand_total ?? 0);
+  const amountPaise = Math.round(amountRupees * 100);
 
   if (MOCK_PAYMENTS) {
     return {
       id: `mock_rfnd_${crypto.randomBytes(8).toString("hex")}`,
       status: "processed",
-      amount: order.grand_total ?? 0,
+      amount: amountRupees,
+      // A fake RRN so the mock flow exercises the same fields as live.
+      rrn: `MOCK${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
       at: new Date(),
     };
   }
 
   // ---- Real refund (test/live) ----
   const refund = await razorpay().payments.refund(order.payment_id, { amount: amountPaise, speed: "normal" });
+  // The bank reference (RRN/UTR/ARN) lives under acquirer_data; it may only
+  // appear once the refund is processed, so it can be null at creation time.
+  const acq = refund.acquirer_data || {};
   return {
     id: refund.id,
     status: refund.status,
     amount: (refund.amount ?? amountPaise) / 100,
+    rrn: acq.rrn || acq.utr || acq.arn || null,
     at: new Date(),
   };
 };
