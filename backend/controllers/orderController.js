@@ -106,6 +106,14 @@ const createOrder = async (req, res) => {
       return res.status(404).json({ message: "Event not found", statusCode: 404 });
     }
 
+    // "Coming soon" (interest) events are not bookable.
+    if (event.stage === "interest") {
+      return res.status(400).json({
+        message: "This event isn't open for booking yet.",
+        statusCode: 400,
+      });
+    }
+
     // How many tickets on this booking (a pass covers only ONE — the holder's).
     const qty = Array.isArray(cart.tickets)
       ? cart.tickets.reduce((n, t) => n + (Number(t.count ?? t.quantity ?? 1) || 1), 0)

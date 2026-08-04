@@ -124,6 +124,12 @@ router.post(
   async (req, res, next) => { await connectDB(); next(); },
   eventController.cancelEvent
 );
+// Open a "Coming soon" (interest) event for booking and notify interested users.
+router.post(
+  "/events/:id/go-live",
+  async (req, res, next) => { await connectDB(); next(); },
+  eventController.goLive
+);
 
 // Door check-in: verify a scanned ticket QR token and mark the attendee in.
 router.post(

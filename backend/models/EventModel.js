@@ -110,6 +110,24 @@ const Event = new Schema({
         default: "Unpublished",
         required: false
     },
+    // Booking stage (independent of publish `status`):
+    //   "open"     → normal, bookable event (default).
+    //   "interest" → "Coming soon" card: shown publicly but NOT bookable. People
+    //                register interest and are notified when it opens for booking.
+    // A Published + "interest" event is a live coming-soon listing.
+    stage: {
+        type: String,
+        enum: ["open", "interest"],
+        default: "open",
+        required: false,
+    },
+    // Guard so interested users are notified exactly once, when the event is
+    // first opened for booking (interest -> open).
+    notifiedInterested: {
+        type: Boolean,
+        default: false,
+        required: false,
+    },
     createdBy:{
         type: Date,
         unique: false,

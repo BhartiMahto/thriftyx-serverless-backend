@@ -28,6 +28,15 @@ const addToCart = async (req, res) => {
         .json({ message: "Event Not Found", data: {}, statusCode: 404 });
     }
 
+    // "Coming soon" (interest) events can't be booked — only interest is collected.
+    if (eventDetail.stage === "interest") {
+      return res.status(400).json({
+        message: "This event isn't open for booking yet. Tap 'I'm Interested' to be notified when it opens.",
+        data: {},
+        statusCode: 400,
+      });
+    }
+
     const filteredTickets = cartDetails.tickets.filter((cartItem) =>
       eventDetail.tickets.some(
         (eventItem) =>

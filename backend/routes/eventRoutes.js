@@ -4,6 +4,7 @@ const eventController = require("../controllers/eventController");
 const connectDB = require("../config/db");
 const upload = require("../middlewares/uploadImage");
 const { protect } = require("../middlewares/authMiddleware");
+const { protectUser, optionalUser } = require("../middlewares/userAuthMiddleware");
 
 const withDb = async (req, res, next) => {
   await connectDB();
@@ -13,9 +14,17 @@ const withDb = async (req, res, next) => {
 /* ---------------- Public reads ---------------- */
 
 router.get("/", withDb, eventController.getEvents);
-// More specific route first so "going" isn't captured by "/:id".
+// The signed-in user's interested event ids — must precede "/:id".
+router.get("/interested/mine", withDb, protectUser, eventController.myInterests);
+// More specific routes first so they aren't captured by "/:id".
 router.get("/:id/going", withDb, eventController.getEventGoing);
+router.get("/:id/interest", withDb, optionalUser, eventController.getInterest);
 router.get("/:id", withDb, eventController.getEventById);
+
+/* ---------------- Interest ("Coming soon") — signed-in users ---------------- */
+
+router.post("/:id/interest", withDb, protectUser, eventController.markInterest);
+router.delete("/:id/interest", withDb, protectUser, eventController.unmarkInterest);
 
 /* ---------------- Admin-only writes ----------------
  * POST /api/events was previously unauthenticated — anyone could create an
