@@ -31,6 +31,19 @@ const Event = new Schema({
         default: null,
         required: false
     },
+    // Multiple cities/venues for one event. Each entry is a city + its venue.
+    // The top-level city/venue/venue_name mirror locations[0] for compatibility
+    // with the list view and older records.
+    locations: {
+        type: [{
+            city: { type: String, default: "" },
+            venue: { type: String, default: "" },
+            address: { type: String, default: "" },
+            lat: { type: String, default: "" },
+            lng: { type: String, default: "" },
+        }],
+        default: [],
+    },
     image: {
         type: String,
         unique: false,

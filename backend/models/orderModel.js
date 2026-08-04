@@ -162,6 +162,13 @@ const Order = new Schema({
     // Details of the person actually attending, captured at checkout.
     // Held on the order (not just the user) because they are point-in-time
     // facts — age in particular — and the admin attendee table displays them.
+    // The city/venue the attendee chose at booking (for multi-city events).
+    // Used to filter "Who's coming" by city.
+    event_city: {
+        type: String,
+        default: null,
+        required: false
+    },
     // True when a Golden Pass covered ONE seat of a paid group booking (the
     // holder's). paidByPass (below) stays false because money was still taken
     // for the friends' seats.

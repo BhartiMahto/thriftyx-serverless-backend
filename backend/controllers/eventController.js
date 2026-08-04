@@ -45,15 +45,23 @@ const getEventGoing = async (req, res) => {
       "refund.id": null,                // no money refund issued
       "refund.at": null,                // no refund/credit action of any kind
     })
-      .select("attendees attendee_details user_id")
+      .select("attendees attendee_details user_id event_city")
       // Account profile is the fallback for a reason/gender/age the booking omits
       // (e.g. older bookings made before the per-event reason existed).
       .populate("user_id", "reasonToJoin gender DOB")
       .sort({ createdBy: -1 })
       .lean();
 
+    // Optional city filter (multi-city events). When a city is given, only
+    // bookings for THAT city are shown — strict, so a Hyderabad booking never
+    // appears under Mumbai. (Legacy bookings with no city won't match any city.)
+    const cityFilter = (req.query.city || "").trim().toLowerCase();
+
     const people = [];
     for (const o of orders) {
+      if (cityFilter && (o.event_city || "").trim().toLowerCase() !== cityFilter) {
+        continue;
+      }
       const list = Array.isArray(o.attendees) && o.attendees.length
         ? o.attendees
         : (o.attendee_details ? [o.attendee_details] : []);
@@ -143,6 +151,26 @@ const createEvent = async (req, res) => {
     if (typeof parsedCoordinates === "string") {
       try { parsedCoordinates = JSON.parse(parsedCoordinates); } catch { parsedCoordinates = {}; }
     }
+    // Multiple city/venue pairs (JSON in multipart). Keep only those with a city
+    // or venue filled in.
+    let parsedLocations = req.body.locations;
+    if (typeof parsedLocations === "string") {
+      try { parsedLocations = JSON.parse(parsedLocations); } catch { parsedLocations = []; }
+    }
+    parsedLocations = Array.isArray(parsedLocations)
+      ? parsedLocations
+          .map((l) => ({
+            city: (l.city || "").trim(),
+            venue: (l.venue || l.venue_name || "").trim(),
+            address: (l.address || "").trim(),
+            lat: String(l.lat ?? l.latitude ?? ""),
+            lng: String(l.lng ?? l.longitude ?? ""),
+          }))
+          .filter((l) => l.city || l.venue)
+      : [];
+    // Top-level city/venue mirror the first location (keeps the list view + old
+    // records working). Fall back to the flat fields when no locations sent.
+    const primary = parsedLocations[0];
 
     // Diagnostics: confirm the multipart file actually survived API Gateway.
     console.log("createEvent hit — file present:", Boolean(req.file),
@@ -172,15 +200,16 @@ const createEvent = async (req, res) => {
     const newEvent = new Event({
       name,
       type,
-      city,
-      venue,
+      city: primary ? primary.city : city,
+      venue: primary ? primary.venue : venue,
       date,
       tickets: parsedTickets,
       min_age,
       max_age,
-      venue_name,
+      venue_name: primary ? primary.venue : venue_name,
       start_time,
       end_time,
+      locations: parsedLocations,
       // NOTE: the schema field is misspelled "cordinates".
       cordinates: parsedCoordinates,
       description,
@@ -218,7 +247,27 @@ const updateEvent = async (req, res) => {
     // `coordinates` is the natural spelling; the schema field is `cordinates`.
     if (req.body.coordinates !== undefined) updates.cordinates = req.body.coordinates;
 
-    if (Object.keys(updates).length === 0) {
+    // In a multipart request (poster replacement) every field is a string —
+    // parse the structured ones back and coerce numbers.
+    if (typeof updates.tickets === "string") {
+      try { updates.tickets = JSON.parse(updates.tickets); } catch { updates.tickets = []; }
+    }
+    if (typeof updates.cordinates === "string") {
+      try { updates.cordinates = JSON.parse(updates.cordinates); } catch { delete updates.cordinates; }
+    }
+    if (updates.min_age !== undefined) updates.min_age = Number(updates.min_age) || undefined;
+    if (updates.max_age !== undefined) updates.max_age = Number(updates.max_age) || undefined;
+
+    // A new poster was uploaded → push it to Cloudinary and store the URL.
+    if (req.file) {
+      const uploaded = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream({ folder: "image" }, (e, r) => (e ? reject(e) : resolve(r)));
+        stream.end(req.file.buffer);
+      });
+      updates.image = uploaded.secure_url;
+    }
+
+    if (Object.keys(updates).length === 0 && req.body.locations === undefined) {
       return res.status(400).json({ message: "No editable fields provided", statusCode: 400 });
     }
 
@@ -232,6 +281,27 @@ const updateEvent = async (req, res) => {
 
     if (updates.tickets && !Array.isArray(updates.tickets)) {
       return res.status(400).json({ message: "tickets must be an array", statusCode: 400 });
+    }
+
+    // Multiple city/venue pairs — normalise and mirror the first onto the flat fields.
+    if (req.body.locations !== undefined) {
+      let locs = req.body.locations;
+      if (typeof locs === "string") { try { locs = JSON.parse(locs); } catch { locs = []; } }
+      locs = Array.isArray(locs)
+        ? locs.map((l) => ({
+            city: (l.city || "").trim(),
+            venue: (l.venue || l.venue_name || "").trim(),
+            address: (l.address || "").trim(),
+            lat: String(l.lat ?? l.latitude ?? ""),
+            lng: String(l.lng ?? l.longitude ?? ""),
+          })).filter((l) => l.city || l.venue)
+        : [];
+      updates.locations = locs;
+      if (locs[0]) {
+        updates.city = locs[0].city;
+        updates.venue = locs[0].venue;
+        updates.venue_name = locs[0].venue;
+      }
     }
 
     const event = await Event.findByIdAndUpdate(req.params.id, { $set: updates }, { new: true });

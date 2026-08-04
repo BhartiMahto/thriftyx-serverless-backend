@@ -54,6 +54,16 @@ router.patch(
   orderController.rescheduleOrder
 );
 
+router.patch(
+  "/:id/change-city",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  protectUser,
+  orderController.changeBookingCity
+);
+
 router.get(
   "/:id/refund-status",
   async (req, res, next) => {

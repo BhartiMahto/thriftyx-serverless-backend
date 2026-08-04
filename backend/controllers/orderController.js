@@ -59,7 +59,7 @@ const createOrder = async (req, res) => {
   // Held outside the try so the catch can hand a spent pass credit back.
   let claimedPass = null;
   try {
-    const { cart_item_id, isTnC_accepted, attendee_details, attendees, couponCode } = req.body;
+    const { cart_item_id, isTnC_accepted, attendee_details, attendees, couponCode, event_city } = req.body;
 
     // Normalise the per-attendee list. New checkout sends `attendees` (one per
     // ticket); older callers send a single `attendee_details`. Either way we
@@ -183,6 +183,8 @@ const createOrder = async (req, res) => {
       attendee_details: attendeeList[0] || undefined,
       // Full per-person list (one QR + one check-in each).
       attendees: attendeeList,
+      // Which city/venue of a multi-city event this booking is for.
+      event_city: event_city ? String(event_city).trim() : null,
       order_id: `THX${Date.now()}${Math.floor(Math.random() * 1000)}`,
       createdBy: new Date(),
       updatedBy: new Date(),
@@ -228,7 +230,7 @@ const createOrder = async (req, res) => {
 const getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({ user_id: req.user._id })
-      .populate("event_id", "name type city venue venue_name date image start_time")
+      .populate("event_id", "name type city venue venue_name date image start_time locations")
       .sort({ createdBy: -1 });
 
     return res.status(200).json({ message: "Orders", data: orders, statusCode: 200 });
@@ -1150,6 +1152,52 @@ const refundBooking = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /api/order/:id/change-city — move a booking to another CITY of the same
+ * multi-city event. Same price/date, so there's no payment — only the venue/city
+ * change. The ticket regenerates with the new venue on next view.
+ * Body: { city }
+ */
+const changeBookingCity = async (req, res) => {
+  try {
+    const city = (req.body.city || "").trim();
+    if (!city) return res.status(400).json({ message: "city is required", statusCode: 400 });
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: "Booking not found", statusCode: 404 });
+    if (String(order.user_id) !== String(req.user._id)) {
+      return res.status(403).json({ message: "This booking is not yours", statusCode: 403 });
+    }
+    if (order.status === "cancelled") {
+      return res.status(409).json({ message: "This booking is cancelled", statusCode: 409 });
+    }
+    if (order.checkedIn) {
+      return res.status(409).json({ message: "Cannot change city after check-in", statusCode: 409 });
+    }
+
+    const event = await Event.findById(order.event_id).select("locations city venue venue_name");
+    const locs = (event && event.locations) || [];
+    const match = locs.find((l) => (l.city || "").trim().toLowerCase() === city.toLowerCase());
+    if (!match) {
+      return res.status(400).json({ message: "That city isn't available for this event", statusCode: 400 });
+    }
+
+    order.event_city = match.city;
+    order.ticket_url = null;   // regenerate the ticket with the new venue on next view
+    order.updatedBy = new Date();
+    await order.save();
+
+    return res.status(200).json({
+      message: "City changed",
+      data: { _id: order._id, event_city: match.city, venue: match.venue },
+      statusCode: 200,
+    });
+  } catch (err) {
+    console.error("changeBookingCity error:", err);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
 module.exports = {
   getAllOrders,
   customerCount,
@@ -1164,6 +1212,7 @@ module.exports = {
   getRefundStatus,
   cancelOrder,
   rescheduleOrder,
+  changeBookingCity,
   refundBooking,
   getOrderTicket,
   getTicketPdf,

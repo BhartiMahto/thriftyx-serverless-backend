@@ -50,9 +50,19 @@ async function ensureTicket(order) {
   if (!s3.isConfigured) return null;
 
   if (!order.populated || !order.event_id?.name) {
-    await order.populate("event_id", "name date start_time venue venue_name city");
+    await order.populate("event_id", "name date start_time venue venue_name city locations");
   }
   const event = order.event_id || {};
+
+  // For a multi-city event, show the venue/city the booking is actually for.
+  let venueName = event.venue_name || event.venue;
+  let cityName = event.city;
+  if (order.event_city && Array.isArray(event.locations)) {
+    const loc = event.locations.find(
+      (l) => (l.city || "").trim().toLowerCase() === order.event_city.trim().toLowerCase()
+    );
+    if (loc) { venueName = loc.venue || venueName; cityName = loc.city || cityName; }
+  }
 
   // One ticket page per attendee. Fall back to the single booker for older
   // (pre-multi-attendee) orders that only have attendee_details.
@@ -69,8 +79,8 @@ async function ensureTicket(order) {
       name: event.name,
       date: event.date,
       startTime: event.start_time,
-      venue: event.venue_name || event.venue,
-      city: event.city,
+      venue: venueName,
+      city: cityName,
     },
     ticketLabel: ticketLabel(order),
     bookingId: order.order_id || String(order._id).slice(-8).toUpperCase(),

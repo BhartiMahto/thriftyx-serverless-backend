@@ -23,7 +23,9 @@ router.get("/:id", withDb, eventController.getEventById);
  */
 
 router.post("/", withDb, protect, upload.single("image"), eventController.createEvent);
-router.patch("/:id", withDb, protect, eventController.updateEvent);
+// upload.single("image") is a no-op for JSON requests and captures the poster
+// when the edit form sends multipart (image replacement).
+router.patch("/:id", withDb, protect, upload.single("image"), eventController.updateEvent);
 router.patch("/:id/status", withDb, protect, eventController.updateEventStatus);
 router.delete("/:id", withDb, protect, eventController.deleteEvent);
 
