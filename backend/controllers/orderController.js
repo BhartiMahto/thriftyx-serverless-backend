@@ -126,7 +126,9 @@ const createOrder = async (req, res) => {
     let discount = 0;
     let appliedCode = null;
     if (!claimedPass && couponCode) {
-      const result = await evaluateCoupon(couponCode, cart.total_price, req.user._id);
+      const result = await evaluateCoupon(couponCode, cart.total_price, req.user._id, {
+        eventCity: event_city ? String(event_city).trim() : "",
+      });
       if (!result.ok) {
         return res.status(400).json({ message: result.reason, statusCode: 400 });
       }

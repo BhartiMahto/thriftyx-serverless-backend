@@ -29,4 +29,23 @@ const protectUser = async (req, res, next) => {
   }
 };
 
-module.exports = { protectUser };
+/**
+ * Soft auth: attaches req.user when a valid customer token is present, but never
+ * blocks the request. Used on public endpoints (e.g. coupon preview) that
+ * personalise results for signed-in shoppers yet still work for guests.
+ */
+const optionalUser = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (token) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded._id).select("-password -otp -forgotCode");
+      if (user) req.user = user;
+    }
+  } catch {
+    /* ignore — treat as guest */
+  }
+  next();
+};
+
+module.exports = { protectUser, optionalUser };

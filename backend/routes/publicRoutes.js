@@ -19,5 +19,6 @@ const withDb = async (req, res, next) => {
 router.get("/faq", withDb, faqController.faqs);
 router.get("/gallery", withDb, galleryController.getGallery);
 router.get("/founders", withDb, require("../controllers/founderController").getPublicFounders);
+router.get("/stats", withDb, require("../controllers/statsController").getPublicStats);
 
 module.exports = router;

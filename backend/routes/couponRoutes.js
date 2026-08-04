@@ -2,15 +2,18 @@ const express = require("express");
 const router = express.Router();
 const connectDB = require("../config/db");
 const couponController = require("../controllers/couponController");
+const { optionalUser } = require("../middlewares/userAuthMiddleware");
 
 // Public: preview a discount at checkout. No usage is recorded here — the real
 // application and usage tracking happen in orderController when the order is placed.
+// optionalUser attaches req.user when signed in so audience/gender targeting applies.
 router.post(
   "/validate",
   async (req, res, next) => {
     await connectDB();
     next();
   },
+  optionalUser,
   couponController.validate
 );
 
@@ -21,6 +24,7 @@ router.get(
     await connectDB();
     next();
   },
+  optionalUser,
   couponController.listAvailable
 );
 

@@ -1,7 +1,61 @@
 const Coupon = require("../models/couponModel");
 const Order = require("../models/orderModel");
+const User = require("../models/userModel");
 
 const round2 = (n) => Math.round(n * 100) / 100;
+
+/**
+ * The booking-history + profile facts a coupon's targeting is checked against.
+ * Computed once per request so per-coupon checks are in-memory.
+ */
+const userSegment = async (userId) => {
+  if (!userId) return null;
+  const [user, completedCount, last] = await Promise.all([
+    User.findById(userId).select("gender").lean(),
+    Order.countDocuments({ user_id: userId, status: "completed" }),
+    Order.find({ user_id: userId, status: "completed" }).select("createdBy").sort({ createdBy: -1 }).limit(1).lean(),
+  ]);
+  return {
+    gender: (user?.gender || "").trim().toLowerCase(),
+    completedCount,
+    lastCompleted: last[0]?.createdBy || null,
+  };
+};
+
+/**
+ * Checks a coupon's audience/gender/city targeting. Returns null when the
+ * coupon applies, or a human reason string when it doesn't.
+ * `seg` is the userSegment (null if not signed in); `eventCity` is the city the
+ * booking is for.
+ */
+const targetingReason = (coupon, seg, eventCity) => {
+  // City targeting is on the BOOKING's city.
+  if (coupon.cities && coupon.cities.length) {
+    const allowed = coupon.cities.map((c) => String(c).trim().toLowerCase());
+    if (!eventCity || !allowed.includes(String(eventCity).trim().toLowerCase())) {
+      return `This offer is only for ${coupon.cities.join(", ")}`;
+    }
+  }
+
+  const needsUser = (coupon.genders && coupon.genders.length) || (coupon.audience && coupon.audience !== "all");
+  if (needsUser && !seg) return "Sign in to use this offer";
+
+  if (coupon.genders && coupon.genders.length) {
+    const allowed = coupon.genders.map((g) => String(g).trim().toLowerCase());
+    if (!seg.gender || !allowed.includes(seg.gender)) return "This offer isn't available for your profile";
+  }
+
+  if (coupon.audience === "first_time") {
+    if (seg.completedCount > 0) return "This is a first-booking-only offer";
+  } else if (coupon.audience === "lapsed") {
+    if (!seg.lastCompleted) return "This win-back offer is for returning members";
+    const days = coupon.lapsedDays || 90;
+    const ageMs = Date.now() - new Date(seg.lastCompleted).getTime();
+    if (ageMs < days * 24 * 3600 * 1000) return `This offer unlocks ${days}+ days after your last booking`;
+  }
+
+  return null;
+};
 
 /**
  * Discount for a coupon against a subtotal. Never returns more than the
@@ -24,7 +78,7 @@ const computeDiscount = (coupon, subtotal) => {
  * `userId` is optional — per-user limits are only enforced when it's known
  * (i.e. at order time, not on the public preview).
  */
-const evaluateCoupon = async (rawCode, subtotal, userId) => {
+const evaluateCoupon = async (rawCode, subtotal, userId, opts = {}) => {
   const code = String(rawCode || "").trim().toUpperCase();
   if (!code) return { ok: false, reason: "Enter a coupon code" };
 
@@ -55,6 +109,17 @@ const evaluateCoupon = async (rawCode, subtotal, userId) => {
     }
   }
 
+  // Audience / gender / city targeting.
+  const targeted =
+    (coupon.cities && coupon.cities.length) ||
+    (coupon.genders && coupon.genders.length) ||
+    (coupon.audience && coupon.audience !== "all");
+  if (targeted) {
+    const seg = opts.segment !== undefined ? opts.segment : await userSegment(userId);
+    const reason = targetingReason(coupon, seg, opts.eventCity);
+    if (reason) return { ok: false, reason };
+  }
+
   return { ok: true, coupon, discount: computeDiscount(coupon, subtotal) };
 };
 
@@ -69,7 +134,9 @@ const validate = async (req, res) => {
       return res.status(400).json({ message: "A valid subtotal is required", statusCode: 400 });
     }
 
-    const result = await evaluateCoupon(code, amount, undefined);
+    // req.user is set by optional auth when the shopper is signed in; eventCity
+    // is the city the booking is for (multi-city events).
+    const result = await evaluateCoupon(code, amount, req.user?._id, { eventCity: req.body.eventCity });
     if (!result.ok) {
       return res.status(200).json({ valid: false, reason: result.reason, statusCode: 200 });
     }
@@ -98,7 +165,11 @@ const validate = async (req, res) => {
 const listAvailable = async (req, res) => {
   try {
     const subtotal = Number(req.query.subtotal) || 0;
+    const eventCity = req.query.city || "";
     const now = new Date();
+
+    // Personalise to the signed-in shopper's segment (null if a guest).
+    const seg = await userSegment(req.user?._id);
 
     const coupons = await Coupon.find({
       active: true,
@@ -114,6 +185,8 @@ const listAvailable = async (req, res) => {
     const data = coupons
       // Drop ones that have hit their global usage limit.
       .filter((c) => c.usageLimit == null || (c.usedCount || 0) < c.usageLimit)
+      // Only show coupons this shopper is actually eligible for (segment match).
+      .filter((c) => targetingReason(c, seg, eventCity) === null)
       .map((c) => {
         const applicable = subtotal >= (c.minOrderValue || 0);
         return {
@@ -153,6 +226,10 @@ const publicCoupon = (c) => ({
   validTo: c.validTo ?? null,
   active: c.active !== false,
   listed: c.listed !== false,
+  audience: c.audience ?? "all",
+  lapsedDays: c.lapsedDays ?? 90,
+  genders: c.genders ?? [],
+  cities: c.cities ?? [],
   createdAt: c.createdAt ?? null,
 });
 
@@ -225,6 +302,25 @@ const parseCouponBody = (body, { partial = false } = {}) => {
   if (body.description !== undefined) out.description = String(body.description).trim() || null;
   if (body.active !== undefined) out.active = Boolean(body.active);
   if (body.listed !== undefined) out.listed = Boolean(body.listed);
+
+  // --- Targeting ---
+  if (body.audience !== undefined) {
+    if (!["all", "first_time", "lapsed"].includes(body.audience)) {
+      return { error: "audience must be all, first_time or lapsed" };
+    }
+    out.audience = body.audience;
+  }
+  if (body.lapsedDays !== undefined) {
+    const n = Number(body.lapsedDays);
+    if (!Number.isFinite(n) || n < 1) return { error: "lapsedDays must be a positive number" };
+    out.lapsedDays = Math.round(n);
+  }
+  const cleanList = (v) =>
+    (Array.isArray(v) ? v : String(v).split(","))
+      .map((x) => String(x).trim())
+      .filter(Boolean);
+  if (body.genders !== undefined) out.genders = cleanList(body.genders);
+  if (body.cities !== undefined) out.cities = cleanList(body.cities);
 
   return { value: out };
 };
