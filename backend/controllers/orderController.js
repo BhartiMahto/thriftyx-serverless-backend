@@ -1,6 +1,7 @@
 const Order = require("../models/orderModel");
 const Cart = require("../models/cartModel");
 const Event = require("../models/EventModel");
+const { ticketsForCity, findTicket } = require("../utils/tickets");
 const Coupon = require("../models/couponModel");
 const { evaluateCoupon } = require("./couponController");
 const {
@@ -128,13 +129,35 @@ const createOrder = async (req, res) => {
     claimedPass = await consumeCredit(req.user._id);
     const passCoversWholeOrder = Boolean(claimedPass) && qty <= 1;
 
-    // Coupon is re-validated and the discount recomputed HERE from the cart's
-    // own subtotal — a client-sent discount is never trusted. Usage is recorded
+    const round2 = (n) => Math.round(n * 100) / 100;
+
+    // Server-authoritative pricing (anti-tamper + per-city). For every non-pass
+    // order we RECOMPUTE the amount from the event's own per-city tickets, so a
+    // tampered or stale client price (or a cheaper city's price) can't stick.
+    // Pass bookings keep the client's holder-excluded amounts (the holder-seat
+    // exclusion is computed client-side) — solo passes are forced to ₹0 below.
+    let sTotal = Number(cart.total_price) || 0;
+    let sFee = Number(cart.booking_fee) || 0;
+    let sGst = Number(cart.gst) || 0;
+    if (!claimedPass) {
+      let sub = 0;
+      for (const t of (Array.isArray(cart.tickets) ? cart.tickets : [])) {
+        const authoritative = findTicket(event, event_city, t.name);
+        const unit = authoritative ? Number(authoritative.price) : (Number(t.price) || 0);
+        sub += unit * (Number(t.count ?? t.quantity ?? 1) || 1);
+      }
+      sTotal = round2(sub);
+      sFee = round2(sTotal * 0.05);
+      sGst = round2(sTotal * 0.18);
+    }
+
+    // Coupon is re-validated and the discount recomputed HERE from the SERVER's
+    // subtotal — a client-sent discount/price is never trusted. Usage is recorded
     // atomically so a coupon can't be over-redeemed by concurrent requests.
     let discount = 0;
     let appliedCode = null;
     if (!claimedPass && couponCode) {
-      const result = await evaluateCoupon(couponCode, cart.total_price, req.user._id, {
+      const result = await evaluateCoupon(couponCode, sTotal, req.user._id, {
         eventCity: event_city ? String(event_city).trim() : "",
       });
       if (!result.ok) {
@@ -164,17 +187,20 @@ const createOrder = async (req, res) => {
     // immediately. A pass-with-friends booking is a normal paid order for the
     // friends' seats (the holder's seat was already excluded from the cart
     // amounts by the client) and follows the pay-then-waitlist flow.
+    // grand_total is derived from the SERVER's own components minus the discount
+    // (applied exactly once) — the client's grand_total is not trusted, which
+    // also fixes the previous double-subtraction of the coupon discount.
     const grandTotal = passCoversWholeOrder
       ? 0
-      : Math.max(0, Math.round((cart.grand_total - discount) * 100) / 100);
+      : Math.max(0, round2(sTotal + sFee + sGst - discount));
 
     const order = await Order.create({
       user_id: req.user._id,
       event_id: cart.event_id,
       tickets: cart.tickets,
-      total_price: passCoversWholeOrder ? 0 : cart.total_price,
-      booking_fee: passCoversWholeOrder ? 0 : cart.booking_fee,
-      gst: passCoversWholeOrder ? 0 : cart.gst,
+      total_price: passCoversWholeOrder ? 0 : sTotal,
+      booking_fee: passCoversWholeOrder ? 0 : sFee,
+      gst: passCoversWholeOrder ? 0 : sGst,
       coupon_code: appliedCode,
       discount,
       grand_total: grandTotal,
@@ -997,9 +1023,11 @@ const rescheduleOrder = async (req, res) => {
       : 1;
     const paidSeats = order.paidByPass ? 0 : (order.passSeat ? Math.max(0, qty - 1) : qty);
 
-    // Unit price on the target: same ticket name if present, else the cheapest.
+    // Unit price on the target — resolved from the booking's CITY tickets on the
+    // target occurrence (per-city pricing), falling back to the target's shared
+    // tickets. Same ticket name if present, else the cheapest in that city.
     const wantName = order.tickets?.[0]?.name;
-    const tTickets = Array.isArray(target.tickets) ? target.tickets : [];
+    const tTickets = ticketsForCity(target, order.event_city);
     const priceOf = (t) => Number(t?.price) || 0;
     let unit = 0;
     if (tTickets.length) {
@@ -1185,11 +1213,33 @@ const changeBookingCity = async (req, res) => {
       return res.status(409).json({ message: "Cannot change city after check-in", statusCode: 409 });
     }
 
-    const event = await Event.findById(order.event_id).select("locations city venue venue_name");
+    const event = await Event.findById(order.event_id).select("locations city venue venue_name tickets");
     const locs = (event && event.locations) || [];
     const match = locs.find((l) => (l.city || "").trim().toLowerCase() === city.toLowerCase());
     if (!match) {
       return res.status(400).json({ message: "That city isn't available for this event", statusCode: 400 });
+    }
+
+    // With per-city tickets, a free city-change is only safe when the booked
+    // ticket exists in the target city AT THE SAME PRICE. A price difference would
+    // need a payment/refund, so we block it and point the user to cancel + rebook.
+    const targetTickets = ticketsForCity(event, match.city);
+    for (const bt of (order.tickets || [])) {
+      const name = bt?.name;
+      if (!name) continue;
+      const tt = targetTickets.find((t) => String(t.name).trim().toLowerCase() === String(name).trim().toLowerCase());
+      if (!tt) {
+        return res.status(400).json({
+          message: `"${name}" isn't offered in ${match.city}. Please cancel and rebook for that city.`,
+          statusCode: 400,
+        });
+      }
+      if (Number(tt.price) !== Number(bt.price)) {
+        return res.status(400).json({
+          message: `The price in ${match.city} differs from what you paid. Please cancel this booking and rebook for ${match.city}.`,
+          statusCode: 400,
+        });
+      }
     }
 
     order.event_city = match.city;

@@ -10,6 +10,34 @@ const { refundCredit } = require("./membershipController");
 const { notifyOrder, notifyUser, niceDate, SUPPORT } = require("../utils/notify");
 
 /** Age in whole years from a DOB, or null. */
+/** Normalise a per-city tickets array (from JSON or multipart string). */
+const normalizeTickets = (raw) => {
+  let t = raw;
+  if (typeof t === "string") { try { t = JSON.parse(t); } catch { t = []; } }
+  if (!Array.isArray(t)) return [];
+  return t
+    .map((x) => ({
+      name: String(x.name ?? x.type ?? "").trim(),
+      price: Number(x.price) || 0,
+      quantity: Number(x.quantity ?? x.capacity) || 0,
+      description: String(x.description ?? "").trim(),
+    }))
+    .filter((x) => x.name);
+};
+
+/** Normalise a schedule/agenda array (from JSON or multipart string). */
+const normalizeSchedule = (raw) => {
+  let s = raw;
+  if (typeof s === "string") { try { s = JSON.parse(s); } catch { s = []; } }
+  if (!Array.isArray(s)) return [];
+  return s
+    .map((x) => ({
+      time: String(x.time ?? "").trim(),
+      activity: String(x.activity ?? "").trim(),
+    }))
+    .filter((x) => x.time || x.activity);
+};
+
 const ageFromDob = (dob) => {
   if (!dob) return null;
   const born = new Date(dob);
@@ -186,6 +214,7 @@ const createEvent = async (req, res) => {
             address: (l.address || "").trim(),
             lat: String(l.lat ?? l.latitude ?? ""),
             lng: String(l.lng ?? l.longitude ?? ""),
+            tickets: normalizeTickets(l.tickets),
           }))
           .filter((l) => l.city || l.venue)
       : [];
@@ -238,6 +267,7 @@ const createEvent = async (req, res) => {
       status,
       // "interest" = Coming soon (collect interest, not bookable); "open" = normal.
       stage: stage === "interest" ? "interest" : "open",
+      schedule: normalizeSchedule(req.body.schedule),
       image: result.secure_url,
       createdBy: new Date(),
     });
@@ -306,6 +336,11 @@ const updateEvent = async (req, res) => {
       return res.status(400).json({ message: "tickets must be an array", statusCode: 400 });
     }
 
+    // Schedule / agenda (structured array; JSON string in multipart).
+    if (req.body.schedule !== undefined) {
+      updates.schedule = normalizeSchedule(req.body.schedule);
+    }
+
     // Stage: an admin may turn a normal event into a "Coming soon" (interest)
     // listing from the edit form. Turning interest -> open must go through the
     // dedicated "Open for booking" action (goLive) so interested users get
@@ -326,6 +361,7 @@ const updateEvent = async (req, res) => {
             address: (l.address || "").trim(),
             lat: String(l.lat ?? l.latitude ?? ""),
             lng: String(l.lng ?? l.longitude ?? ""),
+            tickets: normalizeTickets(l.tickets),
           })).filter((l) => l.city || l.venue)
         : [];
       updates.locations = locs;

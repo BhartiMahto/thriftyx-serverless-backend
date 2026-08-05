@@ -41,6 +41,18 @@ const Event = new Schema({
             address: { type: String, default: "" },
             lat: { type: String, default: "" },
             lng: { type: String, default: "" },
+            // Per-city tickets — each city has its OWN inventory + prices, so
+            // selling out in one city never affects another. Falls back to the
+            // top-level `tickets` array when a city has none (legacy events).
+            tickets: {
+                type: [{
+                    name: { type: String, default: "" },
+                    price: { type: Number, default: 0 },
+                    quantity: { type: Number, default: 0 },
+                    description: { type: String, default: "" },
+                }],
+                default: [],
+            },
         }],
         default: [],
     },
@@ -73,6 +85,14 @@ const Event = new Schema({
         unique: false,
         default: [],
         required: false
+    },
+    // Event schedule / agenda shown on the customer "Agenda" tab.
+    schedule: {
+        type: [{
+            time: { type: String, default: "" },
+            activity: { type: String, default: "" },
+        }],
+        default: [],
     },
     description: {
         type: String,

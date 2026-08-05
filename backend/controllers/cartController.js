@@ -1,6 +1,7 @@
 const Cart = require("../models/cartModel");
 const User = require("../models/userModel");
 const Event = require("../models/EventModel");
+const { ticketsForCity } = require("../utils/tickets");
 
 const addToCart = async (req, res) => {
   try {
@@ -11,6 +12,7 @@ const addToCart = async (req, res) => {
     // subsequent order fail with "Cart does not belong to user".
     let cartDetails = {
       event_id: req.body.event_id,
+      event_city: req.body.event_city ? String(req.body.event_city).trim() : null,
       tickets: req.body.tickets,
       total_price: req.body.total_price,
       booking_fee: req.body.booking_fee,
@@ -37,8 +39,11 @@ const addToCart = async (req, res) => {
       });
     }
 
+    // Availability is checked against THIS CITY's tickets (its own inventory),
+    // falling back to the event's shared tickets for legacy/single-ticket events.
+    const cityTickets = ticketsForCity(eventDetail, cartDetails.event_city);
     const filteredTickets = cartDetails.tickets.filter((cartItem) =>
-      eventDetail.tickets.some(
+      cityTickets.some(
         (eventItem) =>
           cartItem.name === eventItem.name &&
           cartItem.count > eventItem.quantity

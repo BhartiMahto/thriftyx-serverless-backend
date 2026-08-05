@@ -8,6 +8,13 @@ const Cart = new Schema({
         default: false,
         required: true
     },
+    // The city this booking is for (multi-city events) — determines which
+    // per-city ticket inventory/prices apply.
+    event_city: {
+        type: String,
+        default: null,
+        required: false
+    },
     tickets: {
         type: Array,
         unique: false,
