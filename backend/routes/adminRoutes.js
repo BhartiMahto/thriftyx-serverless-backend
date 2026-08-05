@@ -75,6 +75,8 @@ router.get("/analytics/revenue-timeseries", analyticsController.getRevenueTimese
 router.get("/analytics/by-city", analyticsController.getRevenueByCity);
 router.get("/analytics/top-events", analyticsController.getTopEvents);
 router.get("/analytics/ticket-mix", analyticsController.getTicketMix);
+// Website traffic from Google Analytics (GA4 Data API).
+router.get("/analytics/traffic", require("../controllers/webTrafficController").getWebTraffic);
 
 // --- Attendees (admin panel: AttendeesTab / CheckInView) ---
 router.get(
