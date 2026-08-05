@@ -240,12 +240,21 @@ const refundOrderPayment = async (order, amountRupeesOverride) => {
  * Fetches the current refund status from Razorpay. Mocked: echoes what's stored
  * on the order. When live, calls `razorpay.refunds.fetch(order.refund.id)`.
  */
+/**
+ * Live refund status + bank reference (RRN/UTR/ARN) from Razorpay. The RRN is
+ * assigned by the bank after the refund is processed, so it's often null at
+ * creation and only appears on a later fetch — which is why we re-query here.
+ * Returns { status, rrn } (or null when there's no refund).
+ */
 const fetchRefundStatus = async (order) => {
   if (!order.refund?.id) return null;
-  if (MOCK_PAYMENTS) return order.refund.status || "processed";
+  if (MOCK_PAYMENTS) {
+    return { status: order.refund.status || "processed", rrn: order.refund.rrn || null };
+  }
 
   const r = await razorpay().refunds.fetch(order.refund.id);
-  return r.status;
+  const acq = r.acquirer_data || {};
+  return { status: r.status, rrn: acq.rrn || acq.utr || acq.arn || null };
 };
 
 /**

@@ -707,16 +707,21 @@ const getRefundStatus = async (req, res) => {
       return res.status(200).json({ message: "No refund", data: { refunded: false }, statusCode: 200 });
     }
 
-    // Pull the live status from Razorpay (mock echoes the stored value), and
-    // keep the stored copy fresh.
+    // Pull the live status + bank reference (RRN) from Razorpay (mock echoes the
+    // stored value), and keep the stored copy fresh. The RRN often only appears
+    // once the refund is processed, so this refresh is what surfaces it.
     let liveStatus = order.refund?.status ?? null;
+    let liveRrn = order.refund?.rrn ?? null;
     try {
       const s = await fetchRefundStatus(order);
-      if (s && s !== order.refund?.status) {
-        order.refund.status = s;
-        await order.save();
+      if (s) {
+        let changed = false;
+        if (s.status && s.status !== order.refund?.status) { order.refund.status = s.status; changed = true; }
+        if (s.rrn && s.rrn !== order.refund?.rrn) { order.refund.rrn = s.rrn; changed = true; }
+        if (changed) await order.save();
+        liveStatus = s.status ?? liveStatus;
+        liveRrn = s.rrn ?? liveRrn;
       }
-      liveStatus = s ?? liveStatus;
     } catch (err) {
       console.error("fetchRefundStatus error:", err.message);
     }
@@ -727,6 +732,7 @@ const getRefundStatus = async (req, res) => {
         refunded: Boolean(order.refund?.id),
         refundId: order.refund?.id ?? null,
         status: liveStatus,
+        rrn: liveRrn,
         amount: order.refund?.amount ?? null,
         at: order.refund?.at ?? null,
       },
