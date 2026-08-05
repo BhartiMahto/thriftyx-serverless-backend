@@ -76,6 +76,13 @@ const User = new Schema({
         unique:false,
         required:false
     },
+    // --- Pending email/phone change (OTP-gated) ---
+    // The new value is held here and only written to email/phone once the OTP
+    // sent to it is verified. Cleared after a successful change or on a new request.
+    pendingEmail:{ type:String, default:null, required:false },
+    pendingPhone:{ type:String, default:null, required:false },
+    contactOtp:{ type:String, default:null, required:false },
+    contactOtpAt:{ type:Date, default:null, required:false },
     // --- Extended profile (edited from the customer Profile page) ---
     maritalStatus:{
         type:String,

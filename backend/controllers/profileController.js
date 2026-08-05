@@ -2,6 +2,19 @@ const User = require("../models/userModel");
 const Order = require("../models/orderModel");
 const cloudinary = require("../utils/cloudinary");
 const streamifier = require("streamifier");
+const { generateOtp, sendOtpToEmail, sendMessageToWhatsapp } = require("../utils/otp");
+const { toE164 } = require("../utils/phone");
+
+// How long a contact-change OTP stays valid.
+const CONTACT_OTP_TTL_MS = 15 * 60 * 1000;
+
+/** Every stored shape the same phone might take, for uniqueness matching. */
+const phoneMatchCandidates = (phone) => {
+  const e164 = toE164(phone);
+  const digits = String(phone).replace(/\D/g, "");
+  const national = digits.slice(-10);
+  return [...new Set([e164, e164 && e164.replace(/^\+/, ""), digits, national, String(phone).trim()].filter(Boolean))];
+};
 
 /** Fields the customer is allowed to change about themselves. */
 const EDITABLE_FIELDS = [
@@ -86,13 +99,39 @@ const updateMyProfile = async (req, res) => {
       if (req.body[field] !== undefined) updates[field] = req.body[field];
     }
 
-    // Email and phone are login identifiers — changing them would need a fresh
-    // OTP verification, so they are rejected here rather than silently ignored.
-    if (req.body.email !== undefined || req.body.phone !== undefined) {
-      return res.status(400).json({
-        message: "Email and phone cannot be changed here — they require OTP re-verification",
-        statusCode: 400,
-      });
+    // Email / phone rules:
+    //   • CHANGING an existing one needs OTP re-verification → rejected here.
+    //   • ADDING one for the first time (account has none) is allowed inline —
+    //     e.g. a member adds their phone at checkout. Validated + unique-checked.
+    for (const channel of ["email", "phone"]) {
+      if (req.body[channel] === undefined || req.body[channel] === null || String(req.body[channel]).trim() === "") {
+        continue;
+      }
+      if (req.user[channel]) {
+        return res.status(400).json({
+          message: `Your ${channel} can only be changed with OTP verification (from your profile)`,
+          statusCode: 400,
+        });
+      }
+      // First-time add.
+      const raw = String(req.body[channel]).trim();
+      let value, query;
+      if (channel === "email") {
+        value = raw.toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+          return res.status(400).json({ message: "Enter a valid email address", statusCode: 400 });
+        }
+        query = { email: value };
+      } else {
+        value = toE164(raw);
+        if (!value) return res.status(400).json({ message: "Enter a valid phone number", statusCode: 400 });
+        query = { phone: { $in: phoneMatchCandidates(raw) } };
+      }
+      const clash = await User.findOne({ ...query, _id: { $ne: req.user._id } }).select("_id").lean();
+      if (clash) {
+        return res.status(409).json({ message: `This ${channel} is already linked to another account`, statusCode: 409 });
+      }
+      updates[channel] = value;
     }
 
     if (updates.DOB) {
@@ -212,4 +251,133 @@ const getMyStats = async (req, res) => {
   }
 };
 
-module.exports = { getMyProfile, updateMyProfile, updateMyAvatar, getMyStats };
+/* ------------------ Email / phone change (OTP-gated) ------------------ */
+
+/**
+ * POST /api/user/me/contact/request
+ * Body: { channel: "email"|"phone", value }
+ * Validates + checks the new value isn't used by another account, then sends an
+ * OTP to that new email/phone. The change isn't applied until it's verified.
+ */
+const requestContactChange = async (req, res) => {
+  try {
+    const channel = req.body.channel;
+    const raw = String(req.body.value ?? "").trim();
+    if (!["email", "phone"].includes(channel)) {
+      return res.status(400).json({ message: "channel must be email or phone", statusCode: 400 });
+    }
+    if (!raw) return res.status(400).json({ message: "A value is required", statusCode: 400 });
+
+    let value, query, alreadyMine;
+    if (channel === "email") {
+      value = raw.toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+        return res.status(400).json({ message: "Enter a valid email address", statusCode: 400 });
+      }
+      query = { email: value };
+      alreadyMine = (req.user.email || "").toLowerCase() === value;
+    } else {
+      value = toE164(raw);
+      if (!value) return res.status(400).json({ message: "Enter a valid phone number", statusCode: 400 });
+      query = { phone: { $in: phoneMatchCandidates(raw) } };
+      alreadyMine = phoneMatchCandidates(req.user.phone || "").some((c) => phoneMatchCandidates(raw).includes(c));
+    }
+
+    if (alreadyMine) {
+      return res.status(400).json({ message: `That's already your ${channel}`, statusCode: 400 });
+    }
+
+    // Uniqueness: no OTHER account may hold this email/phone.
+    const clash = await User.findOne({ ...query, _id: { $ne: req.user._id } }).select("_id").lean();
+    if (clash) {
+      return res.status(409).json({ message: `This ${channel} is already linked to another account`, statusCode: 409 });
+    }
+
+    const otp = generateOtp(4);
+    await User.updateOne(
+      { _id: req.user._id },
+      {
+        $set: {
+          pendingEmail: channel === "email" ? value : null,
+          pendingPhone: channel === "phone" ? value : null,
+          contactOtp: otp,
+          contactOtpAt: new Date(),
+        },
+      }
+    );
+
+    // Local dev aid: print the code to the server log (never returned in the
+    // response). Guarded by the same opt-in as the login OTP flow.
+    if (process.env.OTP_DEBUG === "true" && process.env.NODE_ENV !== "production") {
+      console.log(`[OTP_DEBUG] contact-change ${channel} code for ${value}: ${otp}`);
+    }
+
+    // Deliver the code to the NEW destination so the user proves they own it.
+    try {
+      if (channel === "email") await sendOtpToEmail(otp, value, req.user.name);
+      else await sendMessageToWhatsapp(otp, value);
+    } catch (e) {
+      console.error("contact OTP delivery failed:", e.message);
+      return res.status(502).json({ message: `Could not send a code to that ${channel}. Try again.`, statusCode: 502 });
+    }
+
+    return res.status(200).json({ message: `We sent a code to your new ${channel}`, data: { channel }, statusCode: 200 });
+  } catch (error) {
+    console.error("requestContactChange error:", error);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+/**
+ * POST /api/user/me/contact/verify
+ * Body: { otp }
+ * Confirms the code and commits the pending email/phone to the account.
+ */
+const verifyContactChange = async (req, res) => {
+  try {
+    const otp = String(req.body.otp ?? "").trim();
+    if (!otp) return res.status(400).json({ message: "Enter the code", statusCode: 400 });
+
+    const user = await User.findById(req.user._id);
+    if (!user || !user.contactOtp || (!user.pendingEmail && !user.pendingPhone)) {
+      return res.status(400).json({ message: "No pending change — request a code first", statusCode: 400 });
+    }
+    if (user.contactOtpAt && Date.now() - new Date(user.contactOtpAt).getTime() > CONTACT_OTP_TTL_MS) {
+      return res.status(400).json({ message: "This code has expired — request a new one", statusCode: 400 });
+    }
+    if (user.contactOtp !== otp) {
+      return res.status(400).json({ message: "Incorrect code", statusCode: 400 });
+    }
+
+    const channel = user.pendingEmail ? "email" : "phone";
+    const value = user.pendingEmail || user.pendingPhone;
+
+    // Re-check uniqueness at commit time (guards a race between request + verify).
+    const query = channel === "email" ? { email: value } : { phone: { $in: phoneMatchCandidates(value) } };
+    const clash = await User.findOne({ ...query, _id: { $ne: user._id } }).select("_id").lean();
+    if (clash) {
+      user.pendingEmail = null; user.pendingPhone = null; user.contactOtp = null; user.contactOtpAt = null;
+      await user.save();
+      return res.status(409).json({ message: `This ${channel} was just taken by another account`, statusCode: 409 });
+    }
+
+    if (channel === "email") user.email = value; else user.phone = value;
+    user.isVerified = true;
+    user.pendingEmail = null; user.pendingPhone = null; user.contactOtp = null; user.contactOtpAt = null;
+    await user.save();
+
+    return res.status(200).json({ message: `Your ${channel} has been updated`, data: publicUser(user), statusCode: 200 });
+  } catch (error) {
+    console.error("verifyContactChange error:", error);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+module.exports = {
+  getMyProfile,
+  updateMyProfile,
+  updateMyAvatar,
+  getMyStats,
+  requestContactChange,
+  verifyContactChange,
+};

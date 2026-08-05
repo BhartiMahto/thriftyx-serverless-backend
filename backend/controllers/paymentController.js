@@ -26,8 +26,15 @@ const Order = require("../models/orderModel");
  * PAYMENTS_MODE: "mock" (fake, default) | "test" (real Razorpay, test keys) |
  * "live" (real Razorpay, live keys). "test" and "live" both use the real SDK;
  * "test" charges nothing (test cards).
+ *
+ * Environment rule: only the DEPLOYED backend (Lambda) is allowed to run live —
+ * locally we always force "test" so a dev run can never take a real payment,
+ * regardless of what PAYMENTS_MODE says in .env.
  */
-const MODE = (process.env.PAYMENTS_MODE || "mock").toLowerCase();
+const { isDeployed } = require("../utils/runtimeEnv");
+const MODE = isDeployed
+  ? (process.env.PAYMENTS_MODE || "mock").toLowerCase()
+  : "test";
 const MOCK_PAYMENTS = MODE !== "test" && MODE !== "live";
 
 // Publishable key id (safe to send to the browser) + secret for the active mode.

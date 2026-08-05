@@ -134,6 +134,11 @@ const validate = async (req, res) => {
       return res.status(400).json({ message: "A valid subtotal is required", statusCode: 400 });
     }
 
+    // Coupons are for signed-in members only.
+    if (!req.user) {
+      return res.status(200).json({ valid: false, reason: "Please sign in to use a coupon", statusCode: 200 });
+    }
+
     // req.user is set by optional auth when the shopper is signed in; eventCity
     // is the city the booking is for (multi-city events).
     const result = await evaluateCoupon(code, amount, req.user?._id, { eventCity: req.body.eventCity });
@@ -167,6 +172,11 @@ const listAvailable = async (req, res) => {
     const subtotal = Number(req.query.subtotal) || 0;
     const eventCity = req.query.city || "";
     const now = new Date();
+
+    // Coupons are for signed-in members only — guests see no offers.
+    if (!req.user) {
+      return res.status(200).json({ message: "Available coupons", data: [], statusCode: 200 });
+    }
 
     // Personalise to the signed-in shopper's segment (null if a guest).
     const seg = await userSegment(req.user?._id);

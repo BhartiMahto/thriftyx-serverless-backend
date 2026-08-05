@@ -15,6 +15,10 @@ const withDb = async (req, res, next) => {
 router.get("/me", withDb, protectUser, profileController.getMyProfile);
 router.patch("/me", withDb, protectUser, profileController.updateMyProfile);
 router.get("/me/stats", withDb, protectUser, profileController.getMyStats);
+// Email/phone change is OTP-gated: request sends a code to the NEW value,
+// verify commits it. Uniqueness is enforced against all other accounts.
+router.post("/me/contact/request", withDb, protectUser, profileController.requestContactChange);
+router.post("/me/contact/verify", withDb, protectUser, profileController.verifyContactChange);
 router.post(
   "/me/avatar",
   withDb,
