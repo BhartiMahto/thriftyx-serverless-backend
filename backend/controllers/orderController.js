@@ -389,8 +389,10 @@ const cancelOrder = async (req, res) => {
           order.refund = await refundOrderPayment(order, refundAmount);
           refundNote = `We retain the 5% platform fee (₹${platformFee}); ₹${refundAmount} is being refunded.`;
         } catch (e) {
-          console.error("cancel refund failed:", e.message);
-          order.refund = { id: null, status: "failed", amount: refundAmount, at: new Date() };
+          // Razorpay SDK rejects with { statusCode, error: { description, reason } }.
+          const reason = e?.error?.description || e?.error?.reason || e?.message || "unknown error";
+          console.error("cancel refund failed:", e?.statusCode || "", reason, JSON.stringify(e?.error || {}));
+          order.refund = { id: null, status: "failed", amount: refundAmount, error: reason, at: new Date() };
           refundNote = "Refund could not be initiated automatically — our team will process it.";
         }
       } else {
@@ -1148,8 +1150,13 @@ const refundBooking = async (req, res) => {
         refund = await refundOrderPayment(order);
         order.refund = refund;
       } catch (e) {
-        console.error("refundBooking failed:", e.message);
-        return res.status(502).json({ message: "Refund failed at the payment gateway", statusCode: 502 });
+        const reason = e?.error?.description || e?.error?.reason || e?.message || "unknown error";
+        console.error("refundBooking failed:", e?.statusCode || "", reason, JSON.stringify(e?.error || {}));
+        // Record why it failed so it can be retried knowingly (id stays null,
+        // so this endpoint can be called again to retry once the cause is fixed).
+        order.refund = { id: null, status: "failed", amount: order.grand_total ?? 0, error: reason, at: new Date() };
+        await order.save();
+        return res.status(502).json({ message: `Refund failed: ${reason}`, statusCode: 502 });
       }
     }
 

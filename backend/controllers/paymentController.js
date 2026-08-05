@@ -256,7 +256,10 @@ async function createGatewayOrder(amountPaise, receipt) {
   if (MOCK_PAYMENTS) {
     return { paymentOrderId: `mock_order_${crypto.randomBytes(8).toString("hex")}`, mock: true };
   }
-  const rzpOrder = await razorpay().orders.create({ amount: amountPaise, currency: "INR", receipt });
+  // payment_capture: 1 → Razorpay auto-captures on success, so the payment is
+  // immediately captured (and therefore refundable). Without it a payment can
+  // sit "authorized" and a refund attempted right after would fail.
+  const rzpOrder = await razorpay().orders.create({ amount: amountPaise, currency: "INR", receipt, payment_capture: 1 });
   return { paymentOrderId: rzpOrder.id, mock: false };
 }
 

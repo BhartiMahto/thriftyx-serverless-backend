@@ -157,6 +157,9 @@ const Order = new Schema({
         // Bank reference (RRN/UTR/ARN) from Razorpay — what the customer quotes
         // to their bank to trace the refund. Populated when the gateway returns it.
         rrn: { type: String, default: null },
+        // Gateway error description when a refund attempt failed (for diagnosis
+        // + so the admin can retry it knowing why).
+        error: { type: String, default: null },
         at: { type: Date, default: null },
     },
     // Details of the person actually attending, captured at checkout.
