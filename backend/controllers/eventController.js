@@ -395,6 +395,10 @@ const updateEvent = async (req, res) => {
       }
     }
 
+    // Snapshot the schedule BEFORE saving, so we can tell if date/time actually
+    // changed (and only then notify attendees).
+    const prev = await Event.findById(req.params.id).select("date start_time end_time").lean();
+
     const event = await Event.findByIdAndUpdate(req.params.id, { $set: updates }, { new: true });
     if (!event) {
       return res.status(404).json({ message: "Event not found", statusCode: 404 });
@@ -413,7 +417,33 @@ const updateEvent = async (req, res) => {
       catch (e) { console.error("invalidateEventTickets (update) failed:", e.message); }
     }
 
-    return res.status(200).json({ message: "Event updated", data: event, ticketsRefreshed, statusCode: 200 });
+    // If the date/time actually changed (not just re-submitted unchanged), tell
+    // attendees so they know the new schedule and can grab the updated ticket.
+    let attendeesNotified = 0;
+    const dateChanged =
+      updates.date !== undefined && prev && +new Date(prev.date || 0) !== +new Date(event.date || 0);
+    const timeChanged =
+      (updates.start_time !== undefined && (prev?.start_time || "") !== (event.start_time || "")) ||
+      (updates.end_time !== undefined && (prev?.end_time || "") !== (event.end_time || ""));
+    if (dateChanged || timeChanged) {
+      try {
+        const orders = await Order.find({ event_id: event._id, status: "completed" })
+          .populate("user_id", "email phone name");
+        const when = niceDate(event.date) + (event.start_time ? ` at ${event.start_time}` : "");
+        const body =
+          `Hi! "${event.name || "Your event"}" has been rescheduled to ${when}` +
+          `${event.city ? ` in ${event.city}` : ""}. Your booking is still valid — no action needed. ` +
+          `You can download your updated ticket from your profile. Questions? ${SUPPORT}\n— IRL Social Hive`;
+        const results = await Promise.allSettled(orders.map((o) =>
+          notifyOrder(o, { subject: `Event updated — ${event.name || "IRL Social Hive"}`, body })
+        ));
+        attendeesNotified = results.filter((r) => r.status === "fulfilled").length;
+      } catch (e) { console.error("updateEvent notify failed:", e.message); }
+    }
+
+    return res.status(200).json({
+      message: "Event updated", data: event, ticketsRefreshed, attendeesNotified, statusCode: 200,
+    });
   } catch (err) {
     if (err.name === "CastError") {
       return res.status(404).json({ message: "Event not found", statusCode: 404 });
