@@ -162,6 +162,44 @@ const getEvents = async (req, res) => {
       }
     }
 
+    // Per-event sales rollups so the list cards show real numbers (registered /
+    // paid / revenue and per-ticket sold), instead of loading each on click.
+    // Two grouped queries over orders — cheap and independent of event count.
+    const attendeeCount = { $max: [{ $size: { $ifNull: ["$attendees", []] } }, 1] };
+    const [orderRollup, ticketRollup] = await Promise.all([
+      Order.aggregate([
+        { $match: { status: { $ne: "cancelled" } } },
+        { $group: {
+            _id: "$event_id",
+            registered: { $sum: attendeeCount },
+            paid: { $sum: { $cond: [{ $eq: ["$status", "completed"] }, attendeeCount, 0] } },
+            revenue: { $sum: { $cond: [{ $eq: ["$status", "completed"] }, { $ifNull: ["$grand_total", 0] }, 0] } },
+        } },
+      ]),
+      Order.aggregate([
+        { $match: { status: "completed" } },
+        { $unwind: "$tickets" },
+        { $group: { _id: { e: "$event_id", n: "$tickets.name" }, sold: { $sum: { $ifNull: ["$tickets.count", 1] } } } },
+      ]),
+    ]);
+
+    const rollupById = new Map(orderRollup.map((r) => [String(r._id), r]));
+    const soldById = new Map();
+    for (const r of ticketRollup) {
+      const eid = String(r._id.e);
+      if (!soldById.has(eid)) soldById.set(eid, {});
+      soldById.get(eid)[r._id.n] = r.sold;
+    }
+    for (const e of events) {
+      const o = rollupById.get(String(e._id));
+      e.rollup = {
+        registered: o?.registered || 0,
+        paid: o?.paid || 0,
+        revenue: o?.revenue || 0,
+        soldByTicket: soldById.get(String(e._id)) || {},
+      };
+    }
+
     res.status(200).json({ size: events.length, events });
   } catch (err) {
     console.error("Error fetching events:", err);
