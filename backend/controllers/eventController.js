@@ -162,9 +162,13 @@ const getEvents = async (req, res) => {
       }
     }
 
-    // Per-event sales rollups so the list cards show real numbers (registered /
-    // paid / revenue and per-ticket sold), instead of loading each on click.
-    // Two grouped queries over orders — cheap and independent of event count.
+    // Per-event sales rollups so the ADMIN list cards show real numbers
+    // (registered / paid / revenue and per-ticket sold). getEvents also serves
+    // the PUBLIC /api/events, so this is admin-only — revenue must never leak to
+    // the public endpoint, and the public list stays cheap. Two grouped queries
+    // over orders, independent of event count.
+    const isAdmin = (req.baseUrl || "").includes("admin");
+    if (isAdmin) {
     const attendeeCount = { $max: [{ $size: { $ifNull: ["$attendees", []] } }, 1] };
     const [orderRollup, ticketRollup] = await Promise.all([
       Order.aggregate([
@@ -198,6 +202,7 @@ const getEvents = async (req, res) => {
         revenue: o?.revenue || 0,
         soldByTicket: soldById.get(String(e._id)) || {},
       };
+    }
     }
 
     res.status(200).json({ size: events.length, events });
