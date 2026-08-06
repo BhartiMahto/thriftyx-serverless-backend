@@ -93,4 +93,38 @@ const getWebTraffic = async (req, res) => {
   }
 };
 
-module.exports = { getWebTraffic };
+/**
+ * GET /api/admin/analytics/realtime — active users in the last 30 minutes
+ * (GA Realtime API — instant, no processing delay). Meant to be polled.
+ */
+const getRealtime = async (req, res) => {
+  try {
+    if (!PROPERTY_ID || !SA_CREDS) {
+      return res.status(200).json({ message: "Not configured", data: { configured: false }, statusCode: 200 });
+    }
+    const client = await getAuth().getClient();
+    const token = (await client.getAccessToken()).token;
+
+    const resp = await fetch(
+      `https://analyticsdata.googleapis.com/v1beta/properties/${PROPERTY_ID}:runRealtimeReport`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ metrics: [{ name: "activeUsers" }] }),
+      }
+    );
+    if (!resp.ok) {
+      const t = await resp.text();
+      console.error("GA realtime error:", resp.status, t.slice(0, 300));
+      return res.status(502).json({ message: "Could not fetch realtime", statusCode: 502 });
+    }
+    const json = await resp.json();
+    const activeUsers = Number(json.rows?.[0]?.metricValues?.[0]?.value || 0);
+    return res.status(200).json({ message: "Realtime", data: { configured: true, activeUsers }, statusCode: 200 });
+  } catch (e) {
+    console.error("getRealtime error:", e.message);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+module.exports = { getWebTraffic, getRealtime };
