@@ -23,4 +23,25 @@ function findTicket(event, city, name) {
   return ticketsForCity(event, city).find((t) => norm(t.name) === norm(name)) || null;
 }
 
-module.exports = { ticketsForCity, findTicket };
+/** The locations[] entry matching a booking city, or null. */
+function locationForCity(event, city) {
+  if (!event || !city) return null;
+  const locations = Array.isArray(event.locations) ? event.locations : [];
+  return locations.find((l) => norm(l.city) === norm(city)) || null;
+}
+
+/**
+ * The city + venue an order is actually FOR. A multi-city event has one
+ * top-level city/venue but each booking carries its own `event_city`; use that
+ * (and the matching location's venue) so admin/lists don't show the primary
+ * city for every booking. Falls back to the event's top-level fields.
+ */
+function orderCityVenue(order) {
+  const event = order?.event_id || {};
+  const city = order?.event_city || event.city || null;
+  const loc = locationForCity(event, order?.event_city);
+  const venue = loc?.venue || event.venue_name || event.venue || null;
+  return { city, venue };
+}
+
+module.exports = { ticketsForCity, findTicket, locationForCity, orderCityVenue };

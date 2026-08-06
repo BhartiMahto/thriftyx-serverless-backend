@@ -5,6 +5,7 @@ const Support = require("../models/supportModel");
 const User = require("../models/userModel");
 const Order = require("../models/orderModel");
 const Event = require("../models/EventModel");
+const { orderCityVenue } = require("../utils/tickets");
 
 /**
  * Admin management for cities, blogs (stories), ratings (reviews), bookings,
@@ -386,7 +387,7 @@ const listBookings = async (req, res) => {
     const [rows, total] = await Promise.all([
       Order.find(filter)
         .populate("user_id", "name email phone")
-        .populate("event_id", "name city date venue_name")
+        .populate("event_id", "name city date venue_name venue locations")
         .sort({ createdBy: -1, _id: -1 })
         .skip(skip)
         .limit(limit)
@@ -417,9 +418,11 @@ const listBookings = async (req, res) => {
           ? {
               _id: o.event_id._id,
               name: o.event_id.name,
-              city: o.event_id.city,
+              // The city/venue this booking is FOR (multi-city events), not the
+              // event's primary city. Falls back to the top-level fields.
+              city: orderCityVenue(o).city,
               date: o.event_id.date,
-              venue: o.event_id.venue_name,
+              venue: orderCityVenue(o).venue,
             }
           : null,
       })),

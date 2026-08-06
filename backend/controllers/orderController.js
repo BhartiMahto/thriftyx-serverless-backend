@@ -1,7 +1,7 @@
 const Order = require("../models/orderModel");
 const Cart = require("../models/cartModel");
 const Event = require("../models/EventModel");
-const { ticketsForCity, findTicket } = require("../utils/tickets");
+const { ticketsForCity, findTicket, orderCityVenue } = require("../utils/tickets");
 const Coupon = require("../models/couponModel");
 const { evaluateCoupon } = require("./couponController");
 const {
@@ -49,8 +49,10 @@ const toAttendeeRows = (order) => {
     // Per-attendee check-in; falls back to the order flag for legacy orders.
     checkedIn: Boolean(p.checkedIn ?? order.checkedIn),
     checkedInAt: p.checkedInAt || order.checkedInAt || null,
-    city: order.event_id?.city || order.user_id?.city || null,
-    venue: order.event_id?.venue_name || order.event_id?.venue || null,
+    // The city/venue this booking is actually FOR (multi-city events store it on
+    // the order), not the event's primary city. Falls back to the top-level.
+    city: orderCityVenue(order).city || order.user_id?.city || null,
+    venue: orderCityVenue(order).venue || null,
     grandTotal: order.grand_total ?? 0,
   }));
 };
@@ -749,7 +751,7 @@ const getEventAttendees = async (req, res) => {
   try {
     const orders = await Order.find({ event_id: req.params.eventId })
       .populate("user_id", "name email city phone")
-      .populate("event_id", "name type city venue venue_name")
+      .populate("event_id", "name type city venue venue_name locations")
       .sort({ createdBy: -1 });
 
     return res.status(200).json({
@@ -804,7 +806,7 @@ const toggleCheckIn = async (req, res) => {
     await order.save();
 
     await order.populate("user_id", "name email city phone");
-    await order.populate("event_id", "name type city venue venue_name");
+    await order.populate("event_id", "name type city venue venue_name locations");
 
     // Return the single row that changed.
     const row = toAttendeeRows(order)[idx];
