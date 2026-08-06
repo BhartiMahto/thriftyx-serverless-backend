@@ -50,18 +50,32 @@ async function ensureTicket(order) {
   if (!s3.isConfigured) return null;
 
   if (!order.populated || !order.event_id?.name) {
-    await order.populate("event_id", "name date start_time venue venue_name city locations");
+    await order.populate("event_id", "name date start_time venue venue_name city locations cordinates");
   }
   const event = order.event_id || {};
 
-  // For a multi-city event, show the venue/city the booking is actually for.
+  // For a multi-city event, show the venue/city the booking is actually for,
+  // plus the address + coordinates so the ticket can link to directions.
   let venueName = event.venue_name || event.venue;
   let cityName = event.city;
-  if (order.event_city && Array.isArray(event.locations)) {
-    const loc = event.locations.find(
+  let address = "";
+  const coords = event.cordinates || {};
+  let lat = coords.lat || "";
+  let lng = coords.lng || "";
+  const locs = Array.isArray(event.locations) ? event.locations : [];
+  let loc = null;
+  if (order.event_city && locs.length) {
+    loc = locs.find(
       (l) => (l.city || "").trim().toLowerCase() === order.event_city.trim().toLowerCase()
     );
-    if (loc) { venueName = loc.venue || venueName; cityName = loc.city || cityName; }
+  }
+  if (!loc && locs.length) loc = locs[0];
+  if (loc) {
+    venueName = loc.venue || venueName;
+    cityName = loc.city || cityName;
+    address = loc.address || address;
+    lat = loc.lat || lat;
+    lng = loc.lng || lng;
   }
 
   // One ticket page per attendee. Fall back to the single booker for older
@@ -81,6 +95,9 @@ async function ensureTicket(order) {
       startTime: event.start_time,
       venue: venueName,
       city: cityName,
+      address,
+      lat,
+      lng,
     },
     ticketLabel: ticketLabel(order),
     bookingId: order.order_id || String(order._id).slice(-8).toUpperCase(),

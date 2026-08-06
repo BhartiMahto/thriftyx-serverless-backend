@@ -147,7 +147,20 @@ function drawTicketPage(doc, t, attendee, png) {
     : "Date to be announced";
   const timeStr = t.event?.startTime ? ` · ${t.event.startTime}` : "";
   row("When", `${dateStr}${timeStr}`);
-  row("Where", [t.event?.venue, t.event?.city].filter(Boolean).join(", ") || "Venue TBA");
+  const whereText = [t.event?.venue, t.event?.address, t.event?.city]
+    .filter(Boolean).join(", ") || "Venue TBA";
+  row("Where", whereText);
+  // Tappable "Get directions" link — opens the device's Maps app with a route.
+  const mapsDest =
+    t.event?.lat && t.event?.lng
+      ? `${t.event.lat},${t.event.lng}`
+      : [t.event?.venue, t.event?.address, t.event?.city].filter(Boolean).join(", ");
+  if (mapsDest) {
+    const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(mapsDest)}`;
+    doc.fillColor(BRAND.blue).font("Helvetica-Bold").fontSize(10)
+      .text("Get directions ›", 24, y - 8, { link: mapsUrl, underline: true });
+    y += 14;
+  }
   // Ticket line shows "General · Guest 2 of 3" for multi-attendee bookings.
   const seat = attendee.total > 1 ? ` · Guest ${attendee.seat} of ${attendee.total}` : "";
   row("Ticket", `${t.ticketLabel || "General"}${seat}`);
