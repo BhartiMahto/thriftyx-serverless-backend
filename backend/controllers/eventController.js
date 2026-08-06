@@ -8,6 +8,29 @@ const streamifier = require("streamifier");
 const { refundOrderPayment } = require("./paymentController");
 const { refundCredit } = require("./membershipController");
 const { notifyOrder, notifyUser, niceDate, SUPPORT } = require("../utils/notify");
+const s3 = require("../utils/s3");
+
+/**
+ * Invalidate the cached ticket PDFs for every active booking of an event, so
+ * they regenerate with the event's new details (date/time/venue) on next
+ * download. The old PDFs are deleted from the bucket (keys are random, so a
+ * regenerated ticket gets a new key). The QR is a deterministic JWT, so any
+ * ticket a customer already downloaded still scans at the door. Returns how
+ * many bookings were refreshed.
+ */
+async function invalidateEventTickets(eventId) {
+  const filter = {
+    event_id: eventId,
+    status: { $ne: "cancelled" },
+    ticket_url: { $nin: [null, ""] },
+  };
+  const orders = await Order.find(filter, { ticket_url: 1 });
+  if (!orders.length) return 0;
+  // Delete old objects best-effort (a failed delete just leaves an orphan).
+  await Promise.allSettled(orders.map((o) => s3.deleteByUrl(o.ticket_url)));
+  await Order.updateMany(filter, { $unset: { ticket_url: "" } });
+  return orders.length;
+}
 
 /** Age in whole years from a DOB, or null. */
 /** Normalise a per-city tickets array (from JSON or multipart string). */
@@ -377,7 +400,20 @@ const updateEvent = async (req, res) => {
       return res.status(404).json({ message: "Event not found", statusCode: 404 });
     }
 
-    return res.status(200).json({ message: "Event updated", data: event, statusCode: 200 });
+    // If anything printed on the ticket changed, refresh cached ticket PDFs so
+    // existing bookings show the new details on next download.
+    const ticketFieldsChanged =
+      updates.date !== undefined || updates.start_time !== undefined ||
+      updates.end_time !== undefined || updates.venue !== undefined ||
+      updates.venue_name !== undefined || updates.city !== undefined ||
+      req.body.locations !== undefined;
+    let ticketsRefreshed = 0;
+    if (ticketFieldsChanged) {
+      try { ticketsRefreshed = await invalidateEventTickets(event._id); }
+      catch (e) { console.error("invalidateEventTickets (update) failed:", e.message); }
+    }
+
+    return res.status(200).json({ message: "Event updated", data: event, ticketsRefreshed, statusCode: 200 });
   } catch (err) {
     if (err.name === "CastError") {
       return res.status(404).json({ message: "Event not found", statusCode: 404 });
@@ -468,6 +504,11 @@ const rescheduleEvent = async (req, res) => {
     if (start_time !== undefined) event.start_time = start_time;
     if (end_time !== undefined) event.end_time = end_time;
     await event.save();
+
+    // The date/time changed → refresh cached ticket PDFs so they show the new
+    // schedule on next download.
+    try { await invalidateEventTickets(event._id); }
+    catch (e) { console.error("invalidateEventTickets (reschedule) failed:", e.message); }
 
     // Bookings reference the event, so they move with it. Notify every member.
     const orders = await Order.find({ event_id: event._id, status: "completed" })
