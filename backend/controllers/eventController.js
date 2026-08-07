@@ -225,6 +225,31 @@ const getEventById = async (req, res) => {
       event.interestCount = await EventInterest.countDocuments({ event_id: event._id });
     }
 
+    // Live availability: how many of each ticket are already sold, per city.
+    // Availability is computed (quantity - sold) rather than mutating quantity,
+    // so cancels/refunds free the seat automatically. Only paid bookings count.
+    const norm = (s) => String(s || "").trim().toLowerCase();
+    const soldRows = await Order.aggregate([
+      { $match: { event_id: event._id, status: "completed" } },
+      { $unwind: "$tickets" },
+      { $group: { _id: { c: "$event_city", n: "$tickets.name" }, sold: { $sum: { $ifNull: ["$tickets.count", 1] } } } },
+    ]);
+    const byCityName = new Map();
+    const byName = new Map();
+    for (const r of soldRows) {
+      const n = norm(r._id.n);
+      byCityName.set(`${norm(r._id.c)}||${n}`, (byCityName.get(`${norm(r._id.c)}||${n}`) || 0) + r.sold);
+      byName.set(n, (byName.get(n) || 0) + r.sold);
+    }
+    for (const loc of event.locations || []) {
+      for (const t of loc.tickets || []) {
+        t.sold = byCityName.get(`${norm(loc.city)}||${norm(t.name)}`) || 0;
+      }
+    }
+    for (const t of event.tickets || []) {
+      t.sold = byName.get(norm(t.name)) || 0;
+    }
+
     res.status(200).json({ message: "Event", data: event, statusCode: 200 });
   } catch (err) {
     // A malformed ObjectId throws a CastError rather than returning null.
