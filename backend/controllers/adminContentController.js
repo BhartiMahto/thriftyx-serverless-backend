@@ -373,9 +373,12 @@ const listBookings = async (req, res) => {
       filter.applicationStatus = req.query.applicationStatus;
     }
     if (req.query.eventId) filter.event_id = req.query.eventId;
-    // Booked city (multi-city events store it on the order).
+    // Booked city (multi-city events store it on the order). Exact, case-
+    // insensitive match — escape the value, then anchor (safeRegex would escape
+    // the ^ $ anchors too, matching nothing).
     if (req.query.city && req.query.city !== "all") {
-      filter.event_city = safeRegex(`^${req.query.city}$`);
+      const c = String(req.query.city).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      filter.event_city = new RegExp(`^${c}$`, "i");
     }
     if (req.query.from || req.query.to) {
       filter.createdBy = {};
