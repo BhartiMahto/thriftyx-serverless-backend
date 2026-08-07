@@ -329,7 +329,7 @@ const listCustomers = async (req, res) => {
     const [rows, total] = await Promise.all([
       // Never send password/otp/token to the browser.
       User.find(filter)
-        .select("name email phone city gender isVerified registrationId createdBy profilePicture")
+        .select("name email phone city gender DOB maritalStatus occupation reasonToJoin bio interests isVerified registrationId createdBy profilePicture")
         .sort({ createdBy: -1, _id: -1 })
         .skip(skip)
         .limit(limit)
@@ -414,6 +414,16 @@ const listBookings = async (req, res) => {
         customer: o.user_id
           ? { name: o.user_id.name, email: o.user_id.email, phone: o.user_id.phone }
           : (o.attendee_details ?? null),
+        // Every attendee's details for the booking, so an admin can review age /
+        // gender / why-they-want-to-join before approving a waitlist request.
+        attendees: (o.attendees?.length ? o.attendees : (o.attendee_details ? [o.attendee_details] : [])).map((a) => ({
+          name: a.name ?? null,
+          age: a.age ?? null,
+          gender: a.gender ?? null,
+          city: a.city ?? null,
+          maritalStatus: a.maritalStatus ?? null,
+          reasonToJoin: a.reasonToJoin ?? null,
+        })),
         event: o.event_id
           ? {
               _id: o.event_id._id,
