@@ -373,6 +373,10 @@ const listBookings = async (req, res) => {
       filter.applicationStatus = req.query.applicationStatus;
     }
     if (req.query.eventId) filter.event_id = req.query.eventId;
+    // Booked city (multi-city events store it on the order).
+    if (req.query.city && req.query.city !== "all") {
+      filter.event_city = safeRegex(`^${req.query.city}$`);
+    }
     if (req.query.from || req.query.to) {
       filter.createdBy = {};
       if (req.query.from) filter.createdBy.$gte = new Date(req.query.from);
