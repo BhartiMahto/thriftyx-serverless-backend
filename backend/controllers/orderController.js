@@ -446,7 +446,7 @@ const getOrderTicket = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id).populate(
       "event_id",
-      "name type city venue venue_name date start_time end_time image"
+      "name type city venue venue_name date start_time end_time image locations"
     );
 
     if (!order) {
@@ -498,8 +498,10 @@ const getOrderTicket = async (req, res) => {
           date: event.date || null,
           startTime: event.start_time || null,
           endTime: event.end_time || null,
-          venue: event.venue_name || event.venue || null,
-          city: event.city || null,
+          // The city/venue this booking is FOR (multi-city events store it on
+          // the order), not the event's primary city.
+          venue: orderCityVenue(order).venue,
+          city: orderCityVenue(order).city,
           image: event.image || null,
         },
         tickets: order.tickets || [],
