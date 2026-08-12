@@ -68,6 +68,6 @@ function niceDate(d) {
   return new Date(d).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 }
 
-const SUPPORT = "help@thriftyx.com / +91-8247539519";
+const SUPPORT = "help@thriftyx.com / +91-8522030022";
 
 module.exports = { notifyOrder, notifyUser, niceDate, SUPPORT };
