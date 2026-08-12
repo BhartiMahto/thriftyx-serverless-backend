@@ -76,7 +76,9 @@ const norm = (s) => String(s || "").trim().toLowerCase();
  */
 const bogoFreeCount = (coupon, ctx) => {
   const g = norm(coupon.bogoGender);
-  const genders = (ctx?.attendees || []).map(norm);
+  // Attendees may arrive as gender strings (order path) or {gender} objects
+  // (validate / available path) — handle both.
+  const genders = (ctx?.attendees || []).map((a) => norm(typeof a === "string" ? a : a?.gender));
   const qualifying = g ? genders.filter((x) => x === g).length : genders.length;
   return Math.floor(qualifying / 2);
 };
