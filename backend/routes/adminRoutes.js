@@ -59,6 +59,9 @@ router.patch("/support-tickets/:id", content.updateSupportTicket);
 router.get("/customers", content.listCustomers);
 router.get("/bookings", content.listBookings);
 
+// Marketing leads (abandoned + converted checkouts).
+router.get("/leads", require("../controllers/leadController").listLeads);
+
 // --- Coupons ---
 const couponController = require("../controllers/couponController");
 
