@@ -218,6 +218,11 @@ const listAvailable = async (req, res) => {
   try {
     const subtotal = Number(req.query.subtotal) || 0;
     const eventCity = req.query.city || "";
+    // Current attendee genders + per-ticket prices (comma lists), so a BOGO
+    // coupon can show whether it's usable yet for this booking.
+    const genders = String(req.query.genders || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const unitPrices = String(req.query.unitPrices || "").split(",").map(Number).filter((n) => Number.isFinite(n));
+    const ctx = { attendees: genders.map((g) => ({ gender: g })), unitPrices };
     const now = new Date();
 
     // Coupons are for signed-in members only — guests see no offers.
@@ -245,7 +250,11 @@ const listAvailable = async (req, res) => {
       // Only show coupons this shopper is actually eligible for (segment match).
       .filter((c) => targetingReason(c, seg, eventCity) === null)
       .map((c) => {
-        const applicable = subtotal >= (c.minOrderValue || 0);
+        const minOk = subtotal >= (c.minOrderValue || 0);
+        const discount = minOk && subtotal > 0 ? computeDiscount(c, subtotal, ctx) : 0;
+        // A BOGO coupon is only usable once there are enough qualifying
+        // attendees to free a seat (discount > 0).
+        const applicable = minOk && (c.discountType !== "bogo" || discount > 0);
         return {
           code: c.code,
           description: c.description ?? null,
@@ -254,8 +263,7 @@ const listAvailable = async (req, res) => {
           bogoGender: c.bogoGender ?? null,
           minOrderValue: c.minOrderValue || 0,
           maxDiscount: c.maxDiscount ?? null,
-          // Only compute a real number when it can actually be used.
-          discount: applicable && subtotal > 0 ? computeDiscount(c, subtotal) : 0,
+          discount,
           applicable,
         };
       });
