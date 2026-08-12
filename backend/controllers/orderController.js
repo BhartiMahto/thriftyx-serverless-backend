@@ -149,8 +149,8 @@ const createOrder = async (req, res) => {
         sub += unit * (Number(t.count ?? t.quantity ?? 1) || 1);
       }
       sTotal = round2(sub);
-      sFee = round2(sTotal * 0.05);
-      sGst = round2(sTotal * 0.18);
+      // Fee + GST are computed AFTER the coupon discount (on the net subtotal)
+      // below, so they scale with the discounted amount.
     }
 
     // Coupon is re-validated and the discount recomputed HERE from the SERVER's
@@ -199,16 +199,23 @@ const createOrder = async (req, res) => {
       }
     }
 
+    // Platform fee (5%) + GST (18%) apply to the DISCOUNTED subtotal, so the
+    // coupon reduces the fees too. (Pass bookings keep the client amounts.)
+    let netSubtotal = sTotal;
+    if (!claimedPass) {
+      netSubtotal = Math.max(0, round2(sTotal - discount));
+      sFee = round2(netSubtotal * 0.05);
+      sGst = round2(netSubtotal * 0.18);
+    }
+
     // A fully pass-covered (solo) booking costs nothing and is confirmed
     // immediately. A pass-with-friends booking is a normal paid order for the
     // friends' seats (the holder's seat was already excluded from the cart
     // amounts by the client) and follows the pay-then-waitlist flow.
-    // grand_total is derived from the SERVER's own components minus the discount
-    // (applied exactly once) — the client's grand_total is not trusted, which
-    // also fixes the previous double-subtraction of the coupon discount.
+    // grand_total = net subtotal (after discount) + fee + GST on that net.
     const grandTotal = passCoversWholeOrder
       ? 0
-      : Math.max(0, round2(sTotal + sFee + sGst - discount));
+      : Math.max(0, round2(netSubtotal + sFee + sGst));
 
     const order = await Order.create({
       user_id: req.user._id,
