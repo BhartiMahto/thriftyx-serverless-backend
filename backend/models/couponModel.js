@@ -13,8 +13,14 @@ const couponSchema = new mongoose.Schema(
     code: { type: String, required: true, unique: true, uppercase: true, trim: true },
     description: { type: String, default: null },
 
-    discountType: { type: String, enum: ["percent", "flat"], required: true },
+    // "percent"/"flat" use discountValue. "bogo" = buy-1-get-1: for every 2
+    // qualifying attendees, the cheapest 1 ticket is free (discountValue ignored).
+    discountType: { type: String, enum: ["percent", "flat", "bogo"], required: true },
     discountValue: { type: Number, required: true, min: 0 },
+
+    // For "bogo": only attendees of this gender count toward the buy-1-get-1
+    // pairs (e.g. "female"). Empty/null = every attendee counts.
+    bogoGender: { type: String, default: null },
 
     // Order subtotal must reach this before the coupon applies.
     minOrderValue: { type: Number, default: 0, min: 0 },

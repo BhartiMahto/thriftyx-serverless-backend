@@ -159,8 +159,22 @@ const createOrder = async (req, res) => {
     let discount = 0;
     let appliedCode = null;
     if (!claimedPass && couponCode) {
+      // Attendee genders + authoritative per-ticket prices, for BOGO coupons.
+      const bogoAttendees = (Array.isArray(attendees) && attendees.length
+        ? attendees
+        : (attendee_details ? [attendee_details] : [])
+      ).map((a) => a?.gender || "");
+      const bogoUnitPrices = [];
+      for (const t of (Array.isArray(cart.tickets) ? cart.tickets : [])) {
+        const authoritative = findTicket(event, event_city, t.name);
+        const unit = authoritative ? Number(authoritative.price) : (Number(t.price) || 0);
+        const cnt = Number(t.count ?? t.quantity ?? 1) || 1;
+        for (let i = 0; i < cnt; i++) bogoUnitPrices.push(unit);
+      }
       const result = await evaluateCoupon(couponCode, sTotal, req.user._id, {
         eventCity: event_city ? String(event_city).trim() : "",
+        attendees: bogoAttendees,
+        unitPrices: bogoUnitPrices,
       });
       if (!result.ok) {
         return res.status(400).json({ message: result.reason, statusCode: 400 });

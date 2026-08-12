@@ -28,7 +28,12 @@ const userSegment = async (userId) => {
  * `seg` is the userSegment (null if not signed in); `eventCity` is the city the
  * booking is for.
  */
-const targetingReason = (coupon, seg, eventCity) => {
+const targetingReason = (coupon, seg, eventCity, ctx = {}) => {
+  // Buy-1-get-1 needs enough qualifying participants to form a pair.
+  if (coupon.discountType === "bogo" && bogoFreeCount(coupon, ctx) <= 0) {
+    const g = norm(coupon.bogoGender);
+    return `This buy-1-get-1 offer needs at least 2 ${g ? g + " " : ""}participants`;
+  }
   // City targeting is on the BOOKING's city.
   if (coupon.cities && coupon.cities.length) {
     const allowed = coupon.cities.map((c) => String(c).trim().toLowerCase());
@@ -57,11 +62,34 @@ const targetingReason = (coupon, seg, eventCity) => {
   return null;
 };
 
+const norm = (s) => String(s || "").trim().toLowerCase();
+
+/**
+ * How many attendees match a BOGO coupon's gender (all of them when no gender
+ * is set), and how many free tickets that earns (1 per pair).
+ */
+const bogoFreeCount = (coupon, ctx) => {
+  const g = norm(coupon.bogoGender);
+  const genders = (ctx?.attendees || []).map(norm);
+  const qualifying = g ? genders.filter((x) => x === g).length : genders.length;
+  return Math.floor(qualifying / 2);
+};
+
 /**
  * Discount for a coupon against a subtotal. Never returns more than the
  * subtotal, and caps percentage coupons at maxDiscount when set.
+ * `ctx` = { attendees: [gender...], unitPrices: [number...] } for BOGO.
  */
-const computeDiscount = (coupon, subtotal) => {
+const computeDiscount = (coupon, subtotal, ctx = {}) => {
+  if (coupon.discountType === "bogo") {
+    const free = bogoFreeCount(coupon, ctx);
+    if (free <= 0) return 0;
+    // The freed seats are the cheapest ones (standard buy-1-get-1).
+    const prices = [...(ctx.unitPrices || [])].map((p) => Number(p) || 0).sort((a, b) => a - b);
+    const discount = prices.slice(0, free).reduce((s, p) => s + p, 0);
+    return round2(Math.max(0, Math.min(discount, subtotal)));
+  }
+
   let discount =
     coupon.discountType === "percent"
       ? (subtotal * coupon.discountValue) / 100
@@ -109,18 +137,26 @@ const evaluateCoupon = async (rawCode, subtotal, userId, opts = {}) => {
     }
   }
 
-  // Audience / gender / city targeting.
+  // Audience / gender / city / BOGO-participant targeting.
+  const ctx = { attendees: opts.attendees || [], unitPrices: opts.unitPrices || [] };
   const targeted =
+    coupon.discountType === "bogo" ||
     (coupon.cities && coupon.cities.length) ||
     (coupon.genders && coupon.genders.length) ||
     (coupon.audience && coupon.audience !== "all");
   if (targeted) {
     const seg = opts.segment !== undefined ? opts.segment : await userSegment(userId);
-    const reason = targetingReason(coupon, seg, opts.eventCity);
+    const reason = targetingReason(coupon, seg, opts.eventCity, ctx);
     if (reason) return { ok: false, reason };
   }
 
-  return { ok: true, coupon, discount: computeDiscount(coupon, subtotal) };
+  const discount = computeDiscount(coupon, subtotal, ctx);
+  // A BOGO with no free seats (e.g. only 1 qualifying attendee) shouldn't apply.
+  if (coupon.discountType === "bogo" && discount <= 0) {
+    const g = norm(coupon.bogoGender);
+    return { ok: false, reason: `This buy-1-get-1 offer needs at least 2 ${g ? g + " " : ""}participants` };
+  }
+  return { ok: true, coupon, discount };
 };
 
 /* ------------------------------ Public ------------------------------ */
@@ -141,7 +177,12 @@ const validate = async (req, res) => {
 
     // req.user is set by optional auth when the shopper is signed in; eventCity
     // is the city the booking is for (multi-city events).
-    const result = await evaluateCoupon(code, amount, req.user?._id, { eventCity: req.body.eventCity });
+    const result = await evaluateCoupon(code, amount, req.user?._id, {
+      eventCity: req.body.eventCity,
+      // Attendee genders + per-ticket prices, for buy-1-get-1 coupons.
+      attendees: Array.isArray(req.body.attendees) ? req.body.attendees : [],
+      unitPrices: Array.isArray(req.body.unitPrices) ? req.body.unitPrices : [],
+    });
     if (!result.ok) {
       return res.status(200).json({ valid: false, reason: result.reason, statusCode: 200 });
     }
@@ -227,6 +268,7 @@ const publicCoupon = (c) => ({
   description: c.description ?? null,
   discountType: c.discountType,
   discountValue: c.discountValue,
+  bogoGender: c.bogoGender ?? null,
   minOrderValue: c.minOrderValue ?? 0,
   maxDiscount: c.maxDiscount ?? null,
   usageLimit: c.usageLimit ?? null,
@@ -269,19 +311,25 @@ const parseCouponBody = (body, { partial = false } = {}) => {
   }
 
   if (body.discountType !== undefined) {
-    if (!["percent", "flat"].includes(body.discountType)) {
-      return { error: "discountType must be percent or flat" };
+    if (!["percent", "flat", "bogo"].includes(body.discountType)) {
+      return { error: "discountType must be percent, flat or bogo" };
     }
     out.discountType = body.discountType;
   } else if (!partial) {
     return { error: "discountType is required" };
   }
 
-  if (body.discountValue !== undefined) {
+  const effectiveType = out.discountType || body.discountType;
+
+  // BOGO ignores discountValue (the free seat is a whole ticket); allow it to
+  // be omitted and store 0.
+  if (effectiveType === "bogo") {
+    out.discountValue = 0;
+    out.bogoGender = body.bogoGender ? String(body.bogoGender).trim().toLowerCase() : null;
+  } else if (body.discountValue !== undefined) {
     const v = Number(body.discountValue);
     if (!Number.isFinite(v) || v <= 0) return { error: "discountValue must be a positive number" };
-    const type = out.discountType || body.discountType;
-    if (type === "percent" && v > 100) return { error: "A percentage can't exceed 100" };
+    if (effectiveType === "percent" && v > 100) return { error: "A percentage can't exceed 100" };
     out.discountValue = v;
   } else if (!partial) {
     return { error: "discountValue is required" };
