@@ -29,8 +29,14 @@ const userSegment = async (userId) => {
  * booking is for.
  */
 const targetingReason = (coupon, seg, eventCity, ctx = {}) => {
-  // Buy-1-get-1 needs enough qualifying participants to form a pair.
-  if (coupon.discountType === "bogo" && bogoFreeCount(coupon, ctx) <= 0) {
+  // Buy-1-get-1 needs enough qualifying participants to form a pair. Only
+  // enforce this when attendees are known (validate/order) — in the browse
+  // list (no attendees) the offer should still be shown.
+  if (
+    coupon.discountType === "bogo" &&
+    ctx.attendees && ctx.attendees.length &&
+    bogoFreeCount(coupon, ctx) <= 0
+  ) {
     const g = norm(coupon.bogoGender);
     return `This buy-1-get-1 offer needs at least 2 ${g ? g + " " : ""}participants`;
   }
@@ -245,6 +251,7 @@ const listAvailable = async (req, res) => {
           description: c.description ?? null,
           discountType: c.discountType,
           discountValue: c.discountValue,
+          bogoGender: c.bogoGender ?? null,
           minOrderValue: c.minOrderValue || 0,
           maxDiscount: c.maxDiscount ?? null,
           // Only compute a real number when it can actually be used.
