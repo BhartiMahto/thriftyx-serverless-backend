@@ -45,6 +45,7 @@ const getWebTraffic = async (req, res) => {
         { dateRanges, dimensions: [{ name: "date" }], metrics: [{ name: "activeUsers" }], orderBys: [{ dimension: { dimensionName: "date" } }] },
         { dateRanges, dimensions: [{ name: "city" }, { name: "region" }], metrics: [{ name: "activeUsers" }], orderBys: [{ metric: { metricName: "activeUsers" }, desc: true }], limit: 8 },
         { dateRanges, dimensions: [{ name: "sessionDefaultChannelGroup" }], metrics: [{ name: "sessions" }], orderBys: [{ metric: { metricName: "sessions" }, desc: true }], limit: 6 },
+        { dateRanges, dimensions: [{ name: "deviceCategory" }], metrics: [{ name: "activeUsers" }], orderBys: [{ metric: { metricName: "activeUsers" }, desc: true }] },
       ],
     };
 
@@ -83,6 +84,10 @@ const getWebTraffic = async (req, res) => {
       sources: (reports[3]?.rows || []).map((r) => ({
         source: r.dimensionValues[0].value,
         sessions: num(r, 0),
+      })),
+      devices: (reports[4]?.rows || []).map((r) => ({
+        device: r.dimensionValues[0].value,
+        users: num(r, 0),
       })),
     };
 
@@ -127,4 +132,62 @@ const getRealtime = async (req, res) => {
   }
 };
 
-module.exports = { getWebTraffic, getRealtime };
+/**
+ * GET /api/admin/analytics/traffic-export — full city × device rows for CSV
+ * export (ALL cities, not just the top-8 shown on the dashboard).
+ */
+const getWebTrafficExport = async (req, res) => {
+  try {
+    if (!PROPERTY_ID || !SA_CREDS) {
+      return res.status(200).json({ message: "Not configured", data: { configured: false, rows: [] }, statusCode: 200 });
+    }
+
+    const to = req.query.to ? new Date(req.query.to) : new Date();
+    const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 27 * 864e5);
+    const dateRanges = [{ startDate: isoDate(from), endDate: isoDate(to) }];
+
+    const client = await getAuth().getClient();
+    const token = (await client.getAccessToken()).token;
+
+    const resp = await fetch(
+      `https://analyticsdata.googleapis.com/v1beta/properties/${PROPERTY_ID}:runReport`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dateRanges,
+          dimensions: [{ name: "city" }, { name: "region" }, { name: "deviceCategory" }],
+          metrics: [{ name: "totalUsers" }, { name: "sessions" }],
+          orderBys: [{ metric: { metricName: "totalUsers" }, desc: true }],
+          limit: 1000,
+        }),
+      }
+    );
+
+    if (!resp.ok) {
+      const t = await resp.text();
+      console.error("GA export error:", resp.status, t.slice(0, 300));
+      return res.status(502).json({ message: "Could not fetch analytics from Google", statusCode: 502 });
+    }
+
+    const json = await resp.json();
+    const rows = (json.rows || []).map((r) => ({
+      city: r.dimensionValues[0].value,
+      region: r.dimensionValues[1].value,
+      device: r.dimensionValues[2].value,
+      users: num(r, 0),
+      sessions: num(r, 1),
+    }));
+
+    return res.status(200).json({
+      message: "Web traffic export",
+      data: { configured: true, range: { from: isoDate(from), to: isoDate(to) }, rows },
+      statusCode: 200,
+    });
+  } catch (e) {
+    console.error("getWebTrafficExport error:", e.message);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+module.exports = { getWebTraffic, getRealtime, getWebTrafficExport };

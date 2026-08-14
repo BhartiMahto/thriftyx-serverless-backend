@@ -48,13 +48,28 @@ const targetingReason = (coupon, seg, eventCity, ctx = {}) => {
     }
   }
 
-  const needsUser = (coupon.genders && coupon.genders.length) || (coupon.audience && coupon.audience !== "all");
-  if (needsUser && !seg) return "Sign in to use this offer";
-
+  // Gender targeting is judged on the PARTICIPANTS being booked — NOT the
+  // logged-in account — so guests and group-bookers (e.g. a male booking two
+  // female friends) qualify off the attendees they add. Falls back to the
+  // account's gender only when signed in with no attendees yet (browse list).
   if (coupon.genders && coupon.genders.length) {
-    const allowed = coupon.genders.map((g) => String(g).trim().toLowerCase());
-    if (!seg.gender || !allowed.includes(seg.gender)) return "This offer isn't available for your profile";
+    const allowed = coupon.genders.map((g) => norm(g));
+    const attendeeGenders = (ctx.attendees || [])
+      .map((a) => norm(typeof a === "string" ? a : a?.gender))
+      .filter(Boolean);
+    if (attendeeGenders.length) {
+      if (!attendeeGenders.some((g) => allowed.includes(g))) {
+        return `This offer is for ${coupon.genders.join("/")} participants`;
+      }
+    } else if (seg && seg.gender) {
+      if (!allowed.includes(seg.gender)) return "This offer isn't available for your profile";
+    }
+    // else: guest with no attendees yet → don't block; re-checked at order time.
   }
+
+  // Only audience-based targeting (win-back / first-booking) needs an account.
+  const needsUser = coupon.audience && coupon.audience !== "all";
+  if (needsUser && !seg) return "Sign in to use this offer";
 
   if (coupon.audience === "first_time") {
     if (seg.completedCount > 0) return "This is a first-booking-only offer";
@@ -178,11 +193,9 @@ const validate = async (req, res) => {
       return res.status(400).json({ message: "A valid subtotal is required", statusCode: 400 });
     }
 
-    // Coupons are for signed-in members only.
-    if (!req.user) {
-      return res.status(200).json({ valid: false, reason: "Please sign in to use a coupon", statusCode: 200 });
-    }
-
+    // Coupons work for guests too — eligibility is judged on the PARTICIPANTS
+    // being booked (attendee genders for BOGO), not on who's logged in. Account-
+    // based coupons (lapsed/first-time) still resolve to "sign in" via targeting.
     // req.user is set by optional auth when the shopper is signed in; eventCity
     // is the city the booking is for (multi-city events).
     const result = await evaluateCoupon(code, amount, req.user?._id, {
@@ -227,12 +240,10 @@ const listAvailable = async (req, res) => {
     const ctx = { attendees: genders.map((g) => ({ gender: g })), unitPrices };
     const now = new Date();
 
-    // Coupons are for signed-in members only — guests see no offers.
-    if (!req.user) {
-      return res.status(200).json({ message: "Available coupons", data: [], statusCode: 200 });
-    }
-
-    // Personalise to the signed-in shopper's segment (null if a guest).
+    // Guests see offers too. Account-based coupons (lapsed/first-time) are
+    // filtered out for guests by targeting; participant-based ones (BOGO on
+    // attendee genders) show and become usable once enough participants are added.
+    // seg is null for a guest.
     const seg = await userSegment(req.user?._id);
 
     const coupons = await Coupon.find({

@@ -81,6 +81,7 @@ router.get("/analytics/ticket-mix", analyticsController.getTicketMix);
 // Website traffic from Google Analytics (GA4 Data API).
 router.get("/analytics/traffic", require("../controllers/webTrafficController").getWebTraffic);
 router.get("/analytics/realtime", require("../controllers/webTrafficController").getRealtime);
+router.get("/analytics/traffic-export", require("../controllers/webTrafficController").getWebTrafficExport);
 
 // --- Attendees (admin panel: AttendeesTab / CheckInView) ---
 router.get(
