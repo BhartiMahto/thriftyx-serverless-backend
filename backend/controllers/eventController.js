@@ -148,7 +148,22 @@ const getEvents = async (req, res) => {
     // ~48 s (→ 503 timeout) and ~4.5 MB. Excluding BOTH drops it to ~13 s / ~1.3
     // MB. `GET /api/events/:id` still returns the full document, and no list UI
     // renders the full description.
-    const events = await Event.find({}).select("-instruction -description").lean();
+    // The ADMIN list needs every event (incl. past); the PUBLIC /api/events only
+    // needs UPCOMING ones. The customer site was fetching all ~1300 events, which
+    // is what made it slow — filter the public path to upcoming (+ any coming-soon
+    // / undated) so the payload stays tiny. A 1-day buffer avoids a timezone edge
+    // hiding a same-day event; the client still applies the precise upcoming filter.
+    const isAdmin = (req.baseUrl || "").includes("admin");
+    const listQuery = isAdmin
+      ? {}
+      : {
+          $or: [
+            { date: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
+            { date: null },
+            { stage: "interest" },
+          ],
+        };
+    const events = await Event.find(listQuery).select("-instruction -description").lean();
 
     // Attach interest counts, but only for "Coming soon" (interest) events — a
     // single grouped query, so the list stays cheap.
@@ -168,8 +183,7 @@ const getEvents = async (req, res) => {
     // (registered / paid / revenue and per-ticket sold). getEvents also serves
     // the PUBLIC /api/events, so this is admin-only — revenue must never leak to
     // the public endpoint, and the public list stays cheap. Two grouped queries
-    // over orders, independent of event count.
-    const isAdmin = (req.baseUrl || "").includes("admin");
+    // over orders, independent of event count. (`isAdmin` computed above.)
     if (isAdmin) {
     const attendeeCount = { $max: [{ $size: { $ifNull: ["$attendees", []] } }, 1] };
     const [orderRollup, ticketRollup] = await Promise.all([

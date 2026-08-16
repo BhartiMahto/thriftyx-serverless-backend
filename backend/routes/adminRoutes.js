@@ -10,7 +10,7 @@ const membershipController = require("../controllers/membershipController");
 const partnerController = require("../controllers/partnerController");
 const upload = require("../middlewares/uploadImage");
 const connectDB = require("../config/db");
-const { protect, requireModule } = require("../middlewares/authMiddleware");
+const { protect, requireModule, isSuperAdmin } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 
@@ -93,6 +93,15 @@ router.patch("/finance/entries/:id", requireModule("finance", "EDIT"), finance.u
 router.delete("/finance/entries/:id", requireModule("finance", "EDIT"), finance.deleteEntry);
 router.post("/finance/reconcile", requireModule("finance", "VIEW"), finance.reconcile);
 router.post("/finance/reconcile/confirm", requireModule("finance", "EDIT"), finance.markReconciled);
+
+// --- WhatsApp marketing campaigns (SUPER_ADMIN only — mass outbound messaging) ---
+const campaign = require("../controllers/campaignController");
+router.get("/campaigns/:campaign/preview", isSuperAdmin, campaign.preview);
+router.post("/campaigns/:campaign/send", isSuperAdmin, campaign.send);
+
+// --- WhatsApp / SMS inbox: replies customers send to our Twilio number ---
+const inbox = require("../controllers/inboxController");
+router.get("/inbox", inbox.listInbound);
 
 // --- Attendees (admin panel: AttendeesTab / CheckInView) ---
 router.get(

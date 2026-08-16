@@ -34,6 +34,25 @@ const sendWhatsapp = async (phone, message) => {
   return instance.sid;
 };
 
+/**
+ * Sends an approved WhatsApp *template* (Content SID) — required for
+ * business-initiated marketing messages. `variables` maps template placeholders
+ * ({{1}}, {{2}}…) to values, e.g. { "1": "Priya" }. Throws on failure so the
+ * caller can record per-recipient status.
+ */
+const sendWhatsappTemplate = async (phone, contentSid, variables = {}) => {
+  if (!isConfigured) throw new Error("Twilio is not configured");
+  if (!contentSid) throw new Error("No WhatsApp template Content SID configured");
+  const to = toWhatsAppAddress(phone);
+  if (!to) throw new Error(`"${phone}" is not a usable phone number`);
+
+  const payload = { to, contentSid, contentVariables: JSON.stringify(variables) };
+  if (messagingServiceSid) payload.messagingServiceSid = messagingServiceSid;
+
+  const instance = await client.messages.create(payload);
+  return instance.sid;
+};
+
 const sendSMS = async (phone, message) => {
   if (!isConfigured) {
     throw new Error("Twilio is not configured (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN)");
@@ -59,4 +78,4 @@ const sendSMS = async (phone, message) => {
   return instance.sid;
 };
 
-module.exports = { sendWhatsapp, sendSMS };
+module.exports = { sendWhatsapp, sendWhatsappTemplate, sendSMS };
