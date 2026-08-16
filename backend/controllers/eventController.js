@@ -142,11 +142,13 @@ const getEventGoing = async (req, res) => {
 
 const getEvents = async (req, res) => {
   try {
-    // The list response must stay under AWS Lambda's 6 MB response cap. The
-    // long HTML `instruction` field (~4 MB across all events) is only needed on
-    // the event detail page, so it is excluded here; `GET /api/events/:id`
-    // still returns the full document.
-    const events = await Event.find({}).select("-instruction").lean();
+    // The list must load fast enough to stay under API Gateway's 29 s timeout.
+    // The large HTML `instruction` AND `description` fields are only needed on
+    // the event detail page — loading them for all ~1300 events made this query
+    // ~48 s (→ 503 timeout) and ~4.5 MB. Excluding BOTH drops it to ~13 s / ~1.3
+    // MB. `GET /api/events/:id` still returns the full document, and no list UI
+    // renders the full description.
+    const events = await Event.find({}).select("-instruction -description").lean();
 
     // Attach interest counts, but only for "Coming soon" (interest) events — a
     // single grouped query, so the list stays cheap.
@@ -204,24 +206,6 @@ const getEvents = async (req, res) => {
       };
     }
     }
-
-    // Trim the heavy HTML `description` to a short plain-text snippet for the
-    // LIST. The full description is served by GET /api/events/:id (detail page +
-    // admin edit). Keeping full descriptions for all events made the response
-    // ~4.5 MB (3+ MB of HTML), close to AWS Lambda's 6 MB response cap — over it
-    // the function returns a 500 with NO CORS header, which the browser reports
-    // as a CORS error. Neither the customer nor admin list renders it in full.
-    const toSnippet = (html) => {
-      if (!html) return "";
-      const text = String(html)
-        .replace(/<[^>]*>/g, " ")
-        .replace(/&nbsp;/gi, " ")
-        .replace(/&amp;/gi, "&")
-        .replace(/\s+/g, " ")
-        .trim();
-      return text.length > 280 ? text.slice(0, 280) + "…" : text;
-    };
-    for (const e of events) e.description = toSnippet(e.description);
 
     res.status(200).json({ size: events.length, events });
   } catch (err) {
