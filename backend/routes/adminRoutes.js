@@ -99,6 +99,8 @@ const campaign = require("../controllers/campaignController");
 router.get("/campaigns/:campaign/preview", isSuperAdmin, campaign.preview);
 router.get("/campaigns/:campaign/recipients", isSuperAdmin, campaign.recipients);
 router.post("/campaigns/:campaign/send", isSuperAdmin, campaign.send);
+router.get("/campaigns/:campaign/delivery", isSuperAdmin, campaign.delivery);
+router.post("/campaigns/:campaign/delivery/refresh", isSuperAdmin, campaign.refreshDelivery);
 
 // --- WhatsApp / SMS inbox: replies customers send to our Twilio number ---
 const inbox = require("../controllers/inboxController");

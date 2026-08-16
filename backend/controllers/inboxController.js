@@ -34,7 +34,7 @@ const listInbound = async (req, res) => {
       });
     }
 
-    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 90);
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 400); // up to ~13mo (Twilio's retention)
     const limit = Math.min(Math.max(Number(req.query.limit) || 300, 1), 1000);
     const search = String(req.query.search || "").trim().toLowerCase();
     const dateSentAfter = new Date(Date.now() - days * 864e5);

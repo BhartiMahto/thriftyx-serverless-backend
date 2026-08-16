@@ -3,6 +3,7 @@ const Order = require("../models/orderModel");
 const Coupon = require("../models/couponModel");
 const CampaignSend = require("../models/campaignSendModel");
 const { sendWhatsappTemplate } = require("../utils/sendMessage");
+const { client } = require("../utils/twilioClient");
 
 /**
  * WhatsApp marketing campaigns.
@@ -239,4 +240,108 @@ const send = async (req, res) => {
   }
 };
 
-module.exports = { preview, recipients, send, CAMPAIGNS };
+const FINAL_STATUSES = ["delivered", "read", "undelivered", "failed"];
+const RECEIVED = new Set(["delivered", "read"]);
+
+/**
+ * GET /api/admin/campaigns/:campaign/delivery — who actually received the
+ * message vs who didn't. Uses the delivery status refreshed from Twilio (plus
+ * failed-at-send rows). "notReceived" = failed at send OR undelivered/failed.
+ */
+const delivery = async (req, res) => {
+  try {
+    const def = CAMPAIGNS[req.params.campaign];
+    if (!def) return res.status(404).json({ message: "Unknown campaign", statusCode: 404 });
+
+    const logs = await CampaignSend.find({ campaign: def.coupon }).lean();
+    const uids = logs.map((l) => l.user_id).filter(Boolean);
+    const users = uids.length
+      ? await User.find({ _id: { $in: uids } }).select("name city").lean()
+      : [];
+    const byId = new Map(users.map((u) => [String(u._id), u]));
+
+    const rows = logs.map((l) => {
+      const u = l.user_id ? byId.get(String(l.user_id)) : null;
+      // Failed at send has no Twilio delivery status — treat as "failed".
+      const ds = l.deliveryStatus || (l.status === "failed" ? "failed" : "");
+      const notReceived = l.status === "failed" || ds === "undelivered" || ds === "failed";
+      return {
+        phone: l.phone,
+        name: u?.name || l.firstName || "",
+        city: u?.city || "",
+        deliveryStatus: ds,
+        received: RECEIVED.has(ds),
+        notReceived,
+        reason: l.error || (l.errorCode ? `Twilio error ${l.errorCode}` : ""),
+        at: l.createdAt,
+      };
+    });
+
+    const summary = {
+      total: rows.length,
+      received: rows.filter((r) => r.received).length,
+      read: rows.filter((r) => r.deliveryStatus === "read").length,
+      notReceived: rows.filter((r) => r.notReceived).length,
+      pending: rows.filter((r) => !r.received && !r.notReceived).length,
+      // How many still need a status refresh from Twilio.
+      needsRefresh: logs.filter(
+        (l) => l.messageSid && !FINAL_STATUSES.includes(l.deliveryStatus || "")
+      ).length,
+    };
+
+    res.status(200).json({ message: "Delivery report", data: rows, meta: { campaign: def.coupon, ...summary }, statusCode: 200 });
+  } catch (e) {
+    console.error("campaign delivery error:", e.message);
+    res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+/**
+ * POST /api/admin/campaigns/:campaign/delivery/refresh
+ * Pulls the latest delivery status from Twilio for a batch of this campaign's
+ * sends whose status isn't final yet, and stores it. The UI loops this until
+ * `remaining` is 0. body: { batchSize? }
+ */
+const refreshDelivery = async (req, res) => {
+  try {
+    const def = CAMPAIGNS[req.params.campaign];
+    if (!def) return res.status(404).json({ message: "Unknown campaign", statusCode: 404 });
+    if (!client) return res.status(400).json({ message: "Twilio not configured", statusCode: 400 });
+
+    const batchSize = Math.min(Math.max(Number(req.body.batchSize) || 50, 1), 100);
+    const pending = await CampaignSend.find({
+      campaign: def.coupon,
+      messageSid: { $nin: [null, ""] },
+      deliveryStatus: { $nin: FINAL_STATUSES },
+    })
+      .limit(batchSize)
+      .lean();
+
+    let updated = 0;
+    for (const r of pending) {
+      try {
+        const m = await client.messages(r.messageSid).fetch();
+        await CampaignSend.updateOne(
+          { _id: r._id },
+          { $set: { deliveryStatus: m.status || "", errorCode: m.errorCode ? String(m.errorCode) : "", deliveryCheckedAt: new Date() } }
+        );
+        updated++;
+      } catch {
+        /* transient — leave for the next refresh pass */
+      }
+    }
+
+    const remaining = await CampaignSend.countDocuments({
+      campaign: def.coupon,
+      messageSid: { $nin: [null, ""] },
+      deliveryStatus: { $nin: FINAL_STATUSES },
+    });
+
+    res.status(200).json({ message: "Refreshed", data: { checked: pending.length, updated, remaining }, statusCode: 200 });
+  } catch (e) {
+    console.error("campaign refreshDelivery error:", e.message);
+    res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+module.exports = { preview, recipients, send, delivery, refreshDelivery, CAMPAIGNS };

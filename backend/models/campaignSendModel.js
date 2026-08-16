@@ -16,6 +16,12 @@ const CampaignSend = new Schema(
     status: { type: String, enum: ["sent", "failed"], required: true },
     messageSid: { type: String, default: "" },
     error: { type: String, default: "" },
+    // Twilio delivery status, refreshed from the API after sending. Values:
+    // queued / sending / sent / delivered / read / undelivered / failed.
+    // "delivered"/"read" = received; "undelivered"/"failed" = did NOT receive.
+    deliveryStatus: { type: String, default: "" },
+    errorCode: { type: String, default: "" },
+    deliveryCheckedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
