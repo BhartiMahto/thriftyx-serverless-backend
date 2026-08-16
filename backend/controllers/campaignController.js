@@ -40,6 +40,9 @@ const toRecipient = (f, lastBooking = null) => ({
   name: (f.name || "").trim(),
   city: f.city || "",
   gender: f.gender || "",
+  // WhatsApp marketing consent (from signup/checkout). Meta throttles marketing
+  // to non-consented users, so future sends should prefer opted-in recipients.
+  optedIn: f.notificationPreferences?.marketing === true,
   lastBooking: lastBooking || null,
 });
 
@@ -49,7 +52,7 @@ const toRecipient = (f, lastBooking = null) => ({
  */
 const resolveAudience = async (def) => {
   const females = await User.find({ gender: FEMALE, phone: { $nin: [null, ""] } })
-    .select("_id name phone city gender")
+    .select("_id name phone city gender notificationPreferences")
     .lean();
 
   // Last completed booking per woman (used both to segment AND to show in the
@@ -130,6 +133,7 @@ const recipients = async (req, res) => {
         phone: r.phone,
         city: r.city,
         gender: r.gender,
+        optedIn: r.optedIn,
         lastBooking: r.lastBooking,
         sendStatus: statusByPhone.get(r.phone) || null, // "sent" | "failed" | null
         alreadySent: statusByPhone.has(r.phone),
