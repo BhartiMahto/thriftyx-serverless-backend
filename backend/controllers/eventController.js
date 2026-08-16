@@ -205,6 +205,24 @@ const getEvents = async (req, res) => {
     }
     }
 
+    // Trim the heavy HTML `description` to a short plain-text snippet for the
+    // LIST. The full description is served by GET /api/events/:id (detail page +
+    // admin edit). Keeping full descriptions for all events made the response
+    // ~4.5 MB (3+ MB of HTML), close to AWS Lambda's 6 MB response cap — over it
+    // the function returns a 500 with NO CORS header, which the browser reports
+    // as a CORS error. Neither the customer nor admin list renders it in full.
+    const toSnippet = (html) => {
+      if (!html) return "";
+      const text = String(html)
+        .replace(/<[^>]*>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/\s+/g, " ")
+        .trim();
+      return text.length > 280 ? text.slice(0, 280) + "…" : text;
+    };
+    for (const e of events) e.description = toSnippet(e.description);
+
     res.status(200).json({ size: events.length, events });
   } catch (err) {
     console.error("Error fetching events:", err);
