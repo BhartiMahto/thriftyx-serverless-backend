@@ -97,6 +97,7 @@ router.post("/finance/reconcile/confirm", requireModule("finance", "EDIT"), fina
 // --- WhatsApp marketing campaigns (SUPER_ADMIN only — mass outbound messaging) ---
 const campaign = require("../controllers/campaignController");
 router.get("/campaigns/:campaign/preview", isSuperAdmin, campaign.preview);
+router.get("/campaigns/:campaign/recipients", isSuperAdmin, campaign.recipients);
 router.post("/campaigns/:campaign/send", isSuperAdmin, campaign.send);
 
 // --- WhatsApp / SMS inbox: replies customers send to our Twilio number ---
