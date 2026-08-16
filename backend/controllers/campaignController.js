@@ -17,8 +17,8 @@ const CAMPAIGNS = {
   WELCOMEBACK70: {
     coupon: "WELCOMEBACK70",
     sidEnv: "TWILIO_WA_WB70_SID",
-    audience: "lapsed-women",
-    label: "WELCOMEBACK70 — 70% off for lapsed women",
+    audience: "all-women",
+    label: "WELCOMEBACK70 — 70% off for all women (booked + never-booked)",
   },
   BUY1GET1: {
     coupon: "BUY1GET1",
@@ -51,21 +51,23 @@ const resolveAudience = async (def) => {
     .select("_id name phone city gender")
     .lean();
 
-  if (def.audience === "all-women") {
-    return females.map((f) => toRecipient(f));
-  }
-
-  // lapsed-women: had a completed booking, last one older than the coupon's window.
-  const coupon = await Coupon.findOne({ code: new RegExp(`^${def.coupon}$`, "i") }).lean();
-  const lapsedDays = coupon?.lapsedDays || 90;
-  const cutoff = new Date(Date.now() - lapsedDays * 864e5);
-
+  // Last completed booking per woman (used both to segment AND to show in the
+  // recipient table so the admin can tell returning vs never-booked apart).
   const ids = females.map((f) => f._id);
   const agg = await Order.aggregate([
     { $match: { user_id: { $in: ids }, status: "completed" } },
     { $group: { _id: "$user_id", last: { $max: "$createdBy" } } },
   ]);
   const lastById = new Map(agg.map((a) => [String(a._id), a.last]));
+
+  if (def.audience === "all-women") {
+    return females.map((f) => toRecipient(f, lastById.get(String(f._id)) || null));
+  }
+
+  // lapsed-women: had a completed booking, last one older than the coupon's window.
+  const coupon = await Coupon.findOne({ code: new RegExp(`^${def.coupon}$`, "i") }).lean();
+  const lapsedDays = coupon?.lapsedDays || 90;
+  const cutoff = new Date(Date.now() - lapsedDays * 864e5);
 
   return females
     .filter((f) => {
