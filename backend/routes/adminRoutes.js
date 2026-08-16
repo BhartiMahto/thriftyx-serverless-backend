@@ -10,7 +10,7 @@ const membershipController = require("../controllers/membershipController");
 const partnerController = require("../controllers/partnerController");
 const upload = require("../middlewares/uploadImage");
 const connectDB = require("../config/db");
-const { protect } = require("../middlewares/authMiddleware");
+const { protect, requireModule } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 
@@ -82,6 +82,17 @@ router.get("/analytics/ticket-mix", analyticsController.getTicketMix);
 router.get("/analytics/traffic", require("../controllers/webTrafficController").getWebTraffic);
 router.get("/analytics/realtime", require("../controllers/webTrafficController").getRealtime);
 router.get("/analytics/traffic-export", require("../controllers/webTrafficController").getWebTrafficExport);
+
+// --- Financial Insights ledger (super-admin, or sub-admins with "finance" perm) ---
+const finance = require("../controllers/financeController");
+router.get("/finance/summary", requireModule("finance", "VIEW"), finance.financeSummary);
+router.get("/finance/entries", requireModule("finance", "VIEW"), finance.listEntries);
+router.post("/finance/entries", requireModule("finance", "EDIT"), finance.createEntry);
+router.post("/finance/import", requireModule("finance", "EDIT"), finance.importEntries);
+router.patch("/finance/entries/:id", requireModule("finance", "EDIT"), finance.updateEntry);
+router.delete("/finance/entries/:id", requireModule("finance", "EDIT"), finance.deleteEntry);
+router.post("/finance/reconcile", requireModule("finance", "VIEW"), finance.reconcile);
+router.post("/finance/reconcile/confirm", requireModule("finance", "EDIT"), finance.markReconciled);
 
 // --- Attendees (admin panel: AttendeesTab / CheckInView) ---
 router.get(

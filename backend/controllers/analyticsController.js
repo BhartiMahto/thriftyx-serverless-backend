@@ -30,6 +30,12 @@ const parseRange = (query) => {
 
 const dateMatch = (from, to) => ({ createdBy: { $gte: from, $lte: to } });
 
+// A successfully-refunded order (refund.id set) is no longer revenue, even when
+// its status stayed "completed" — e.g. an external/gateway refund. (Our own
+// admin refunds also flip status to "cancelled", so they're excluded regardless.)
+const NOT_REFUNDED = { "refund.id": null };
+const paidMatch = (from, to) => ({ ...dateMatch(from, to), status: PAID, ...NOT_REFUNDED });
+
 /** GET /api/admin/analytics/summary */
 const getSummary = async (req, res) => {
   try {
@@ -54,18 +60,25 @@ const getSummary = async (req, res) => {
       return acc;
     }, {});
 
-    const paid = statuses[PAID] || { count: 0, revenue: 0 };
     const totalOrders = byStatus.reduce((n, s) => n + s.count, 0);
 
+    // Paid revenue/count exclude refunded orders (see NOT_REFUNDED) — the raw
+    // byStatus breakdown above still shows every status untouched.
+    const [paidAgg] = await Order.aggregate([
+      { $match: paidMatch(from, to) },
+      { $group: { _id: null, count: { $sum: 1 }, revenue: { $sum: { $ifNull: ["$grand_total", 0] } } } },
+    ]);
+    const paid = { count: paidAgg?.count || 0, revenue: paidAgg?.revenue || 0 };
+
     const [uniqueCustomers] = await Order.aggregate([
-      { $match: { ...dateMatch(from, to), status: PAID } },
+      { $match: paidMatch(from, to) },
       { $group: { _id: "$user_id" } },
       { $count: "n" },
     ]);
 
     // Fees are tracked separately from ticket value on each order.
     const [fees] = await Order.aggregate([
-      { $match: { ...dateMatch(from, to), status: PAID } },
+      { $match: paidMatch(from, to) },
       {
         $group: {
           _id: null,
@@ -111,15 +124,17 @@ const getRevenueTimeseries = async (req, res) => {
     const interval = req.query.interval === "day" ? "day" : "month";
     const format = interval === "day" ? "%Y-%m-%d" : "%Y-%m";
 
+    // Paid = completed AND not refunded (refund.id null).
+    const isPaid = {
+      $and: [{ $eq: ["$status", PAID] }, { $eq: [{ $ifNull: ["$refund.id", null] }, null] }],
+    };
     const rows = await Order.aggregate([
       { $match: dateMatch(from, to) },
       {
         $group: {
           _id: { $dateToString: { format, date: "$createdBy" } },
-          revenue: {
-            $sum: { $cond: [{ $eq: ["$status", PAID] }, { $ifNull: ["$grand_total", 0] }, 0] },
-          },
-          paidOrders: { $sum: { $cond: [{ $eq: ["$status", PAID] }, 1, 0] } },
+          revenue: { $sum: { $cond: [isPaid, { $ifNull: ["$grand_total", 0] }, 0] } },
+          paidOrders: { $sum: { $cond: [isPaid, 1, 0] } },
           totalOrders: { $sum: 1 },
         },
       },
@@ -150,7 +165,7 @@ const getRevenueByCity = async (req, res) => {
     if (!valid) return res.status(400).json({ message: "Invalid date range", statusCode: 400 });
 
     const rows = await Order.aggregate([
-      { $match: { ...dateMatch(from, to), status: PAID } },
+      { $match: paidMatch(from, to) },
       { $lookup: { from: "events", localField: "event_id", foreignField: "_id", as: "event" } },
       { $unwind: { path: "$event", preserveNullAndEmptyArrays: true } },
       {
@@ -184,7 +199,7 @@ const getTopEvents = async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 10, 50);
 
     const rows = await Order.aggregate([
-      { $match: { ...dateMatch(from, to), status: PAID } },
+      { $match: paidMatch(from, to) },
       {
         $group: {
           _id: "$event_id",
@@ -237,7 +252,7 @@ const getTicketMix = async (req, res) => {
     const count = { $convert: { input: "$tickets.count", to: "int", onError: 0, onNull: 0 } };
 
     const rows = await Order.aggregate([
-      { $match: { ...dateMatch(from, to), status: PAID } },
+      { $match: paidMatch(from, to) },
       { $unwind: { path: "$tickets", preserveNullAndEmptyArrays: false } },
       {
         $addFields: {
