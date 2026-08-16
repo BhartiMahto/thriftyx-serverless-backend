@@ -72,6 +72,11 @@ provider:
     TWILIO_AUTH_TOKEN: ${env:TWILIO_AUTH_TOKEN, ''}
     TWILIO_MESSAGING_SERVICE_SID: ${env:TWILIO_MESSAGING_SERVICE_SID, ''}
     TWILIO_WHATSAPP_OTP_TEMPLATE_SID: ${env:TWILIO_WHATSAPP_OTP_TEMPLATE_SID, ''}
+    # Business WhatsApp sender (E.164) — lets the inbox fetch inbound replies precisely
+    TWILIO_WHATSAPP_FROM: ${env:TWILIO_WHATSAPP_FROM, ''}
+    # Approved marketing template Content SIDs (Content Template Builder)
+    TWILIO_WA_WB70_SID: ${env:TWILIO_WA_WB70_SID, ''}
+    TWILIO_WA_BOGO_SID: ${env:TWILIO_WA_BOGO_SID, ''}
     SMTP_HOST: ${env:SMTP_HOST, ''}
     SMTP_PORT: ${env:SMTP_PORT, ''}
     SMTP_SECURE: ${env:SMTP_SECURE, ''}
