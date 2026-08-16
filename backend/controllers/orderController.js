@@ -772,7 +772,17 @@ const getRefundStatus = async (req, res) => {
 /** GET /api/admin/events/:eventId/attendees — admin attendee list for one event. */
 const getEventAttendees = async (req, res) => {
   try {
-    const orders = await Order.find({ event_id: req.params.eventId })
+    // Only real, current attendees:
+    //  - status "completed" = paid (incl. Golden Pass free bookings). This drops
+    //    the thousands of "in_progress"/pending/failed (never-paid) checkouts.
+    //  - refund.id null = NOT refunded. A refunded booking is cancelled (or an
+    //    external refund left status completed with a refund object) and must not
+    //    show at the door. (Failed-refund attempts keep refund.id null → still shown.)
+    const orders = await Order.find({
+      event_id: req.params.eventId,
+      status: "completed",
+      "refund.id": null,
+    })
       .populate("user_id", "name email city phone")
       .populate("event_id", "name type city venue venue_name locations")
       .sort({ createdBy: -1 });
