@@ -62,6 +62,11 @@ router.get("/bookings", content.listBookings);
 // Marketing leads (abandoned + converted checkouts).
 router.get("/leads", require("../controllers/leadController").listLeads);
 
+// Data exports: guest list (per-attendee, full profile) + sales by city.
+const reports = require("../controllers/reportController");
+router.get("/reports/guests", reports.guestList);
+router.get("/reports/sales-by-city", reports.salesByCity);
+
 // --- Coupons ---
 const couponController = require("../controllers/couponController");
 
