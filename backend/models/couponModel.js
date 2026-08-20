@@ -53,6 +53,10 @@ const couponSchema = new mongoose.Schema(
     genders: { type: [String], default: [] },
     // Allowed cities (matched against the BOOKING's city). Empty = all.
     cities: { type: [String], default: [] },
+    // Personal coupon: when set, ONLY this user's account can redeem it.
+    assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "users", default: null },
+    // The email/phone the coupon was assigned to (for admin display).
+    assignedContact: { type: String, default: "" },
   },
   { timestamps: true }
 );

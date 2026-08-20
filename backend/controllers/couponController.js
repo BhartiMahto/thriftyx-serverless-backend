@@ -16,6 +16,7 @@ const userSegment = async (userId) => {
     Order.find({ user_id: userId, status: "completed" }).select("createdBy").sort({ createdBy: -1 }).limit(1).lean(),
   ]);
   return {
+    userId: String(userId),
     gender: (user?.gender || "").trim().toLowerCase(),
     completedCount,
     lastCompleted: last[0]?.createdBy || null,
@@ -67,8 +68,17 @@ const targetingReason = (coupon, seg, eventCity, ctx = {}) => {
     // else: guest with no attendees yet → don't block; re-checked at order time.
   }
 
-  // Only audience-based targeting (win-back / first-booking) needs an account.
-  const needsUser = coupon.audience && coupon.audience !== "all";
+  // A coupon assigned to one individual only works for that person's account.
+  if (coupon.assignedTo) {
+    if (!seg) return "Sign in to use this offer";
+    if (String(coupon.assignedTo) !== String(seg.userId)) {
+      return "This coupon is reserved for a specific member";
+    }
+  }
+
+  // Audience-based targeting (win-back / first-booking) and per-user assignment
+  // both need a signed-in account.
+  const needsUser = (coupon.audience && coupon.audience !== "all") || Boolean(coupon.assignedTo);
   if (needsUser && !seg) return "Sign in to use this offer";
 
   if (coupon.audience === "first_time") {
@@ -248,10 +258,11 @@ const listAvailable = async (req, res) => {
 
     const coupons = await Coupon.find({
       active: true,
-      listed: { $ne: false },
       $and: [
         { $or: [{ validFrom: null }, { validFrom: { $lte: now } }] },
         { $or: [{ validTo: null }, { validTo: { $gte: now } }] },
+        // Publicly listed, OR privately assigned to THIS signed-in user.
+        { $or: [{ listed: { $ne: false } }, ...(req.user?._id ? [{ assignedTo: req.user._id }] : [])] },
       ],
     })
       .sort({ discountValue: -1 })
@@ -310,6 +321,8 @@ const publicCoupon = (c) => ({
   lapsedDays: c.lapsedDays ?? 90,
   genders: c.genders ?? [],
   cities: c.cities ?? [],
+  assignedTo: c.assignedTo ? String(c.assignedTo) : null,
+  assignedContact: c.assignedContact ?? "",
   createdAt: c.createdAt ?? null,
 });
 
@@ -407,14 +420,53 @@ const parseCouponBody = (body, { partial = false } = {}) => {
       .filter(Boolean);
   if (body.genders !== undefined) out.genders = cleanList(body.genders);
   if (body.cities !== undefined) out.cities = cleanList(body.cities);
+  // Personal coupon target (email/phone). Resolved to a user id in create/update.
+  if (body.assignedContact !== undefined) out.assignedContact = String(body.assignedContact || "").trim();
 
   return { value: out };
+};
+
+/**
+ * Resolves `value.assignedContact` (an email or phone) to a user id, mutating
+ * `value` in place. Empty string clears the assignment. Returns an error string,
+ * or null on success / when assignment wasn't touched.
+ */
+const resolveAssignee = async (value) => {
+  if (value.assignedContact === undefined) return null; // field not sent
+  const contact = value.assignedContact;
+  if (!contact) {
+    value.assignedTo = null;
+    value.assignedContact = "";
+    return null;
+  }
+  let user;
+  if (contact.includes("@")) {
+    user = await User.findOne({ email: contact.toLowerCase() }).select("_id email phone").lean();
+  } else {
+    const d = contact.replace(/\D/g, "").slice(-10);
+    user = await User.findOne({ phone: { $in: [contact, d, `91${d}`, `+91${d}`, `0${d}`] } })
+      .select("_id email phone")
+      .lean();
+  }
+  if (!user) return `No customer found with "${contact}"`;
+  value.assignedTo = user._id;
+  value.assignedContact = user.email || user.phone || contact;
+  return null;
 };
 
 const createCoupon = async (req, res) => {
   try {
     const { value, error } = parseCouponBody(req.body);
     if (error) return res.status(400).json({ message: error, statusCode: 400 });
+
+    const asgErr = await resolveAssignee(value);
+    if (asgErr) return res.status(400).json({ message: asgErr, statusCode: 400 });
+    // A personal coupon defaults to private + single-use (one person, one time).
+    if (value.assignedTo) {
+      if (value.listed === undefined) value.listed = false;
+      if (value.usageLimit === undefined) value.usageLimit = 1;
+      if (value.perUserLimit === undefined) value.perUserLimit = 1;
+    }
 
     if (await Coupon.findOne({ code: value.code })) {
       return res.status(409).json({ message: "A coupon with this code already exists", statusCode: 409 });
@@ -432,6 +484,10 @@ const updateCoupon = async (req, res) => {
   try {
     const { value, error } = parseCouponBody(req.body, { partial: true });
     if (error) return res.status(400).json({ message: error, statusCode: 400 });
+
+    const asgErr = await resolveAssignee(value);
+    if (asgErr) return res.status(400).json({ message: asgErr, statusCode: 400 });
+
     if (!Object.keys(value).length) {
       return res.status(400).json({ message: "Nothing to update", statusCode: 400 });
     }
