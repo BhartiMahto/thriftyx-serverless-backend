@@ -12,6 +12,44 @@ const { ensureTicket, ensureInvoice, attendeesOf } = require("../utils/documents
 const { verifyTicket } = require("../utils/ticketToken");
 const { consumeCredit, refundCredit } = require("./membershipController");
 const { notifyOrder, niceDate, SUPPORT } = require("../utils/notify");
+const sendMail = require("../utils/sendMail");
+
+/**
+ * Emails the customer that their booking is confirmed, with the event details
+ * and a link to their ticket. Email-only + best-effort (never breaks the flow).
+ * WhatsApp confirmation would need its own approved utility template.
+ */
+const notifyBookingConfirmed = async (order) => {
+  try {
+    await order.populate("user_id", "email name");
+    await order.populate("event_id", "name date start_time end_time venue_name venue city");
+    const to = order.attendee_details?.email || order.user_id?.email;
+    if (!to) return;
+    const ev = order.event_id || {};
+    const name = ev.name || "your event";
+    const when = ev.date ? niceDate(ev.date) : "";
+    const time = [ev.start_time, ev.end_time].filter(Boolean).join(" - ");
+    const where = [ev.venue_name || ev.venue, order.event_city || ev.city].filter(Boolean).join(", ");
+    const ticketLine = order.ticket_url
+      ? `Your ticket (with entry QR): ${order.ticket_url}`
+      : `Your ticket is ready under "My Tickets" on your IRL Social Hive profile.`;
+    const body = [
+      `Great news — your booking for "${name}" is confirmed! 🎉`,
+      "",
+      ...(when ? [`Date: ${when}${time ? ` (${time})` : ""}`] : []),
+      ...(where ? [`Venue: ${where}`] : []),
+      "",
+      ticketLine,
+      "",
+      "Please have your ticket QR ready at entry. Can't wait to see you there!",
+      `Questions? ${SUPPORT}`,
+      "— IRL Social Hive",
+    ].join("\n");
+    await sendMail(to, `Booking confirmed — ${name}`, body);
+  } catch (e) {
+    console.error("booking-confirmed email:", e.message);
+  }
+};
 
 /**
  * Maps an Order to ONE flat `Attendee` row PER PERSON on the booking. A
@@ -259,6 +297,7 @@ const createOrder = async (req, res) => {
       } catch (docErr) {
         console.error("Pass ticket generation failed:", docErr.message);
       }
+      await notifyBookingConfirmed(order);
     }
 
     return res.status(201).json({
@@ -666,6 +705,9 @@ const decideApplication = async (req, res) => {
       } catch (docErr) {
         console.error("Ticket generation failed for order", String(order._id), docErr.message);
       }
+
+      // Let the customer know they're in, with their ticket. Best-effort.
+      await notifyBookingConfirmed(order);
 
       return res.status(200).json({
         message: "Application confirmed",
