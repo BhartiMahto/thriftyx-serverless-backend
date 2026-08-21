@@ -481,7 +481,9 @@ const updateEvent = async (req, res) => {
 
     // Snapshot the schedule BEFORE saving, so we can tell if date/time actually
     // changed (and only then notify attendees).
-    const prev = await Event.findById(req.params.id).select("date start_time end_time").lean();
+    const prev = await Event.findById(req.params.id)
+      .select("date start_time end_time city venue venue_name locations")
+      .lean();
 
     const event = await Event.findByIdAndUpdate(req.params.id, { $set: updates }, { new: true });
     if (!event) {
@@ -501,26 +503,65 @@ const updateEvent = async (req, res) => {
       catch (e) { console.error("invalidateEventTickets (update) failed:", e.message); }
     }
 
-    // If the date/time actually changed (not just re-submitted unchanged), tell
-    // attendees so they know the new schedule and can grab the updated ticket.
+    // Notify affected attendees when the SCHEDULE (date/time — event-wide) or a
+    // CITY'S VENUE changes. Venue changes are scoped to that city's bookers only
+    // (a multi-city event keeps one date but a different venue per city); a
+    // schedule change goes to everyone. Only real changes trigger a mail.
     let attendeesNotified = 0;
+    const nrm = (s) => String(s || "").trim().toLowerCase();
     const dateChanged =
       updates.date !== undefined && prev && +new Date(prev.date || 0) !== +new Date(event.date || 0);
     const timeChanged =
       (updates.start_time !== undefined && (prev?.start_time || "") !== (event.start_time || "")) ||
       (updates.end_time !== undefined && (prev?.end_time || "") !== (event.end_time || ""));
-    if (dateChanged || timeChanged) {
+    const scheduleChanged = dateChanged || timeChanged;
+
+    // Cities whose venue or address changed (compared per city).
+    const prevLocByCity = new Map((prev?.locations || []).map((l) => [nrm(l.city), l]));
+    const venueChangedCities = new Set();
+    for (const l of event.locations || []) {
+      const p = prevLocByCity.get(nrm(l.city));
+      if (p && (nrm(p.venue) !== nrm(l.venue) || nrm(p.address) !== nrm(l.address))) {
+        venueChangedCities.add(nrm(l.city));
+      }
+    }
+    // Flat venue change (single-city events without a locations[] array).
+    const flatVenueChanged =
+      (updates.venue !== undefined || updates.venue_name !== undefined) &&
+      (nrm(prev?.venue) !== nrm(event.venue) || nrm(prev?.venue_name) !== nrm(event.venue_name));
+
+    if (scheduleChanged || venueChangedCities.size || flatVenueChanged) {
       try {
         const orders = await Order.find({ event_id: event._id, status: "completed" })
           .populate("user_id", "email phone name");
         const when = niceDate(event.date) + (event.start_time ? ` at ${event.start_time}` : "");
-        const body =
-          `Hi! "${event.name || "Your event"}" has been rescheduled to ${when}` +
-          `${event.city ? ` in ${event.city}` : ""}. Your booking is still valid — no action needed. ` +
-          `You can download your updated ticket from your profile. Questions? ${SUPPORT}\n— IRL Social Hive`;
-        const results = await Promise.allSettled(orders.map((o) =>
-          notifyOrder(o, { subject: `Event updated — ${event.name || "IRL Social Hive"}`, body })
-        ));
+        const venueFor = (city) => {
+          const loc = (event.locations || []).find((l) => nrm(l.city) === nrm(city));
+          return loc
+            ? [loc.venue, loc.address].filter(Boolean).join(", ")
+            : [event.venue_name || event.venue, event.city].filter(Boolean).join(", ");
+        };
+
+        // A booker is affected by a venue change only if it's THEIR city.
+        const affected = orders.filter((o) => {
+          const venueForThem = flatVenueChanged || venueChangedCities.has(nrm(o.event_city || event.city || ""));
+          return scheduleChanged || venueForThem;
+        });
+
+        const results = await Promise.allSettled(affected.map((o) => {
+          const cityRaw = o.event_city || event.city || "";
+          const venueForThem = flatVenueChanged || venueChangedCities.has(nrm(cityRaw));
+          const lines = [`Hi! There's an update to "${event.name || "your event"}"${cityRaw ? ` — ${cityRaw}` : ""}:`, ""];
+          if (scheduleChanged) lines.push(`🗓 New date & time: ${when}`);
+          if (venueForThem) lines.push(`📍 New venue: ${venueFor(cityRaw)}`);
+          lines.push(
+            "",
+            "Your booking is still valid — no action needed. Download your updated ticket from your profile.",
+            `Questions? ${SUPPORT}`,
+            "— IRL Social Hive"
+          );
+          return notifyOrder(o, { subject: `Event updated — ${event.name || "IRL Social Hive"}`, body: lines.join("\n") });
+        }));
         attendeesNotified = results.filter((r) => r.status === "fulfilled").length;
       } catch (e) { console.error("updateEvent notify failed:", e.message); }
     }
