@@ -11,7 +11,7 @@ const {
 const { ensureTicket, ensureInvoice, attendeesOf } = require("../utils/documents");
 const { verifyTicket } = require("../utils/ticketToken");
 const { consumeCredit, refundCredit } = require("./membershipController");
-const { notifyOrder, niceDate, SUPPORT } = require("../utils/notify");
+const { notifyOrder, niceDate, SUPPORT, sendWaTemplate, firstName } = require("../utils/notify");
 const sendMail = require("../utils/sendMail");
 
 /**
@@ -21,15 +21,31 @@ const sendMail = require("../utils/sendMail");
  */
 const notifyBookingConfirmed = async (order) => {
   try {
-    await order.populate("user_id", "email name");
+    await order.populate("user_id", "email phone name");
     await order.populate("event_id", "name date start_time end_time venue_name venue city");
     const to = order.attendee_details?.email || order.user_id?.email;
-    if (!to) return;
+    const phone = order.attendee_details?.phone || order.user_id?.phone;
+    const who = firstName(order.attendee_details?.name || order.user_id?.name);
     const ev = order.event_id || {};
     const name = ev.name || "your event";
     const when = ev.date ? niceDate(ev.date) : "";
     const time = [ev.start_time, ev.end_time].filter(Boolean).join(" - ");
     const where = [ev.venue_name || ev.venue, order.event_city || ev.city].filter(Boolean).join(", ");
+
+    // WhatsApp (approved Utility document template) — delivers the ticket PDF.
+    // {{5}} is the ticket filename appended to the template's fixed S3 base URL.
+    const ticketFile = order.ticket_url ? order.ticket_url.split("/").pop() : "";
+    if (ticketFile) {
+      await sendWaTemplate(phone, "TWILIO_WA_BOOKING_CONFIRMED_SID", {
+        1: who,
+        2: name,
+        3: [when, time].filter(Boolean).join(", ") || "See your ticket",
+        4: where || "See your ticket",
+        5: ticketFile,
+      });
+    }
+
+    if (!to) return;
     // Attach the ticket + tax invoice PDFs (nodemailer streams them from S3).
     const attachments = [];
     if (order.ticket_url) attachments.push({ filename: "ticket.pdf", path: order.ticket_url });
