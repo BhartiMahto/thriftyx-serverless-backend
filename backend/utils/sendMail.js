@@ -21,19 +21,30 @@ const getTransporter = () => {
   return transporter;
 };
 
-const sendMail = async (to, subject, message) => {
+/**
+ * @param {string} to
+ * @param {string} subject
+ * @param {string} message  plain-text body
+ * @param {Array<{filename:string,path:string}>} [attachments]  files to attach;
+ *        `path` may be a public URL (nodemailer streams it) — used for the
+ *        ticket/invoice PDFs on their S3 URLs.
+ */
+const sendMail = async (to, subject, message, attachments) => {
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
     throw new Error("SMTP is not configured (SMTP_HOST / SMTP_USER)");
   }
 
-  await getTransporter().sendMail({
+  const mail = {
     from: process.env.MAIL_FROM || '"Thrifty X" <no-reply@thriftyx.com>',
     to,
     subject,
     text: message,
-  });
+  };
+  if (Array.isArray(attachments) && attachments.length) mail.attachments = attachments;
 
-  console.log(`Email sent to ${to}`);
+  await getTransporter().sendMail(mail);
+
+  console.log(`Email sent to ${to}${mail.attachments ? ` (+${mail.attachments.length} attachment)` : ""}`);
 };
 
 module.exports = sendMail;

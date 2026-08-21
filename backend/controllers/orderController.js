@@ -30,9 +30,16 @@ const notifyBookingConfirmed = async (order) => {
     const when = ev.date ? niceDate(ev.date) : "";
     const time = [ev.start_time, ev.end_time].filter(Boolean).join(" - ");
     const where = [ev.venue_name || ev.venue, order.event_city || ev.city].filter(Boolean).join(", ");
-    const ticketLine = order.ticket_url
-      ? `Your ticket (with entry QR): ${order.ticket_url}`
-      : `Your ticket is ready under "My Tickets" on your IRL Social Hive profile.`;
+    // Attach the ticket + tax invoice PDFs (nodemailer streams them from S3).
+    const attachments = [];
+    if (order.ticket_url) attachments.push({ filename: "ticket.pdf", path: order.ticket_url });
+    if (order.invoice_url) attachments.push({ filename: "invoice.pdf", path: order.invoice_url });
+
+    const ticketLine = attachments.length
+      ? "Your ticket (with entry QR) and tax invoice are attached to this email."
+      : order.ticket_url
+        ? `Your ticket (with entry QR): ${order.ticket_url}`
+        : `Your ticket is ready under "My Tickets" on your IRL Social Hive profile.`;
     const body = [
       `Great news — your booking for "${name}" is confirmed! 🎉`,
       "",
@@ -45,7 +52,7 @@ const notifyBookingConfirmed = async (order) => {
       `Questions? ${SUPPORT}`,
       "— IRL Social Hive",
     ].join("\n");
-    await sendMail(to, `Booking confirmed — ${name}`, body);
+    await sendMail(to, `Booking confirmed — ${name}`, body, attachments);
   } catch (e) {
     console.error("booking-confirmed email:", e.message);
   }
