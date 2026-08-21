@@ -383,44 +383,44 @@ const cancelOrder = async (req, res) => {
       order.membership_id = null;
     }
 
-    // Auto-refund a paid (money) booking on self-cancel, provided it's before
-    // the refund cutoff (REFUND_CUTOFF_HOURS before the event starts). Because
-    // the CUSTOMER is backing out, the non-refundable 5% platform fee is
-    // retained; we refund (grand total − platform fee). After the cutoff the
-    // seat is still released, but no automatic refund is issued.
-    const REFUND_CUTOFF_HOURS = 24;
+    // Auto-refund a paid (money) booking on self-cancel, TIERED by how long
+    // before the event the customer backs out (% of the total they paid):
+    //   ≥ 48h  → 100%      24–48h → 50%      < 24h → 10%      event started → 0%
     const round2 = (n) => Math.round(n * 100) / 100;
-    const platformFee = order.booking_fee ?? 0;
-    const refundAmount = round2((order.grand_total ?? 0) - platformFee);
+    const refundPercentForHours = (h) => {
+      if (h <= 0) return 0; // event already started / passed
+      if (h >= 48) return 100;
+      if (h >= 24) return 50;
+      return 10;
+    };
+
+    let evDate = null;
+    try {
+      await order.populate("event_id", "date");
+      evDate = order.event_id?.date ? new Date(order.event_id.date) : null;
+    } catch { /* no event date → treat as fully refundable */ }
+    const hoursToEvent = evDate ? (evDate.getTime() - Date.now()) / 3600000 : Infinity;
+    const refundPercent = refundPercentForHours(hoursToEvent);
+    const refundAmount = round2((order.grand_total ?? 0) * (refundPercent / 100));
+
     let refundNote = null;
     const eligibleForMoneyRefund =
       wasPaid && !order.paidByPass && refundAmount > 0 &&
       order.payment_id && !order.refund?.id;
 
     if (eligibleForMoneyRefund) {
-      let evDate = null;
       try {
-        await order.populate("event_id", "date");
-        evDate = order.event_id?.date ? new Date(order.event_id.date) : null;
-      } catch { /* no event date → treat as refundable */ }
-      const cutoff = evDate ? evDate.getTime() - REFUND_CUTOFF_HOURS * 3600 * 1000 : Infinity;
-      const beforeCutoff = Date.now() < cutoff;
-
-      if (beforeCutoff) {
-        try {
-          // Partial refund: retain the 5% platform fee.
-          order.refund = await refundOrderPayment(order, refundAmount);
-          refundNote = `We retain the 5% platform fee (₹${platformFee}); ₹${refundAmount} is being refunded.`;
-        } catch (e) {
-          // Razorpay SDK rejects with { statusCode, error: { description, reason } }.
-          const reason = e?.error?.description || e?.error?.reason || e?.message || "unknown error";
-          console.error("cancel refund failed:", e?.statusCode || "", reason, JSON.stringify(e?.error || {}));
-          order.refund = { id: null, status: "failed", amount: refundAmount, error: reason, at: new Date() };
-          refundNote = "Refund could not be initiated automatically — our team will process it.";
-        }
-      } else {
-        refundNote = `Cancelled within ${REFUND_CUTOFF_HOURS}h of the event — no automatic refund. Contact support if you think this is a mistake.`;
+        order.refund = await refundOrderPayment(order, refundAmount);
+        refundNote = `As per our cancellation policy, ${refundPercent}% (₹${refundAmount}) is being refunded.`;
+      } catch (e) {
+        // Razorpay SDK rejects with { statusCode, error: { description, reason } }.
+        const reason = e?.error?.description || e?.error?.reason || e?.message || "unknown error";
+        console.error("cancel refund failed:", e?.statusCode || "", reason, JSON.stringify(e?.error || {}));
+        order.refund = { id: null, status: "failed", amount: refundAmount, error: reason, at: new Date() };
+        refundNote = "Refund could not be initiated automatically — our team will process it.";
       }
+    } else if (wasPaid && !order.paidByPass && refundPercent === 0) {
+      refundNote = "The event has already started, so no refund applies. Contact support if you think this is a mistake.";
     }
 
     await order.save();
@@ -434,8 +434,8 @@ const cancelOrder = async (req, res) => {
       if (order.refund?.id && order.refund?.status !== "failed") {
         const ref = order.refund.rrn || order.refund.id;
         body =
-          `Your booking${ev} has been cancelled. We retain the 5% platform fee (₹${platformFee}); ` +
-          `₹${order.refund.amount} is being refunded to your original payment method (ref ${ref}), ` +
+          `Your booking${ev} has been cancelled. As per our cancellation policy, ` +
+          `₹${order.refund.amount} (${refundPercent}%) is being refunded to your original payment method (ref ${ref}), ` +
           `usually within 5–7 business days. Questions? ${SUPPORT}\n— IRL Social Hive`;
       } else {
         body =
@@ -450,7 +450,7 @@ const cancelOrder = async (req, res) => {
         _id: order._id,
         status: order.status,
         cancelledAt: order.cancelledAt,
-        platformFeeRetained: eligibleForMoneyRefund ? platformFee : 0,
+        refundPercent: eligibleForMoneyRefund ? refundPercent : 0,
         refund: order.refund?.id || order.refund?.status ? order.refund : null,
         refundNote,
       },
