@@ -1300,6 +1300,12 @@ const refundBooking = async (req, res) => {
           `${amt ? ` (₹${amt})` : ""}${ref ? `, ref ${ref}` : ""}. Refunds can take 5–7 business days. ` +
           `Questions? ${SUPPORT}\n— IRL Social Hive`,
       });
+      // WhatsApp (approved Utility template): {{3}} = refunded amount.
+      await sendWaTemplate(
+        order.attendee_details?.phone || order.user_id?.phone,
+        "TWILIO_WA_REFUND_SID",
+        { 1: firstName(order.attendee_details?.name || order.user_id?.name), 2: order.event_id?.name || "your event", 3: amt ? `₹${amt}` : "Your refund" }
+      );
     } catch (e) { console.error("refund notify:", e.message); }
 
     return res.status(200).json({

@@ -7,7 +7,7 @@ const cloudinary = require("../utils/cloudinary");
 const streamifier = require("streamifier");
 const { refundOrderPayment } = require("./paymentController");
 const { refundCredit } = require("./membershipController");
-const { notifyOrder, notifyUser, niceDate, SUPPORT } = require("../utils/notify");
+const { notifyOrder, notifyUser, niceDate, SUPPORT, sendWaTemplate, firstName } = require("../utils/notify");
 const s3 = require("../utils/s3");
 
 /**
@@ -560,7 +560,19 @@ const updateEvent = async (req, res) => {
             `Questions? ${SUPPORT}`,
             "— IRL Social Hive"
           );
-          return notifyOrder(o, { subject: `Event updated — ${event.name || "IRL Social Hive"}`, body: lines.join("\n") });
+
+          // WhatsApp (approved Utility template): {{3}} = a SINGLE-LINE summary
+          // (WhatsApp variables can't contain newlines).
+          const parts = [];
+          if (scheduleChanged) parts.push(`New date & time: ${when}`);
+          if (venueForThem) parts.push(`New venue: ${venueFor(cityRaw)}`);
+          const phone = o.attendee_details?.phone || o.user_id?.phone;
+          const whoName = firstName(o.attendee_details?.name || o.user_id?.name);
+          const waTask = sendWaTemplate(phone, "TWILIO_WA_EVENT_UPDATED_SID", {
+            1: whoName, 2: event.name || "your event", 3: parts.join(" — ") || "Details have changed",
+          });
+          const emailTask = notifyOrder(o, { subject: `Event updated — ${event.name || "IRL Social Hive"}`, body: lines.join("\n") });
+          return Promise.all([emailTask, waTask]);
         }));
         attendeesNotified = results.filter((r) => r.status === "fulfilled").length;
       } catch (e) { console.error("updateEvent notify failed:", e.message); }
