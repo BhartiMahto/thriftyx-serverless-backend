@@ -182,6 +182,12 @@ router.get(
   async (req, res, next) => { await connectDB(); next(); },
   membershipController.listMemberships
 );
+router.post(
+  "/memberships/mail",
+  async (req, res, next) => { await connectDB(); next(); },
+  isSuperAdmin,
+  membershipController.mailAllMembers
+);
 router.patch(
   "/memberships/:id",
   async (req, res, next) => { await connectDB(); next(); },

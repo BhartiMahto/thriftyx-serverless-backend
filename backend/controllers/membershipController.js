@@ -1,5 +1,6 @@
 const Membership = require("../models/membershipModel");
 const Counter = require("../models/counterModel");
+const sendMail = require("../utils/sendMail");
 const s3 = require("../utils/s3");
 const { buildPassPdf, buildInvoicePdf } = require("../utils/pdf");
 const { gstConfig, financialYear, splitGstAmount } = require("../config/gst");
@@ -367,6 +368,50 @@ const revokeMembership = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/admin/memberships/mail — email all Golden Pass members.
+ * body: { subject, body, audience?: "active" | "all" }. Deduped by email and
+ * sent with limited concurrency to stay inside the Lambda timeout.
+ */
+const mailAllMembers = async (req, res) => {
+  try {
+    const subject = String(req.body.subject || "").trim();
+    const body = String(req.body.body || "").trim();
+    if (!subject || !body) {
+      return res.status(400).json({ message: "Subject and message are required", statusCode: 400 });
+    }
+
+    const filter = req.body.audience === "all" ? {} : { status: "active" };
+    const rows = await Membership.find(filter).populate("user_id", "email name").lean();
+
+    const seen = new Set();
+    const recipients = [];
+    for (const m of rows) {
+      const email = m.user_id?.email;
+      if (email && !seen.has(email.toLowerCase())) {
+        seen.add(email.toLowerCase());
+        recipients.push(email);
+      }
+    }
+    if (!recipients.length) {
+      return res.status(200).json({ message: "No members with an email", data: { sent: 0, failed: 0, total: 0 }, statusCode: 200 });
+    }
+
+    let sent = 0, failed = 0;
+    const CHUNK = 6;
+    for (let i = 0; i < recipients.length; i += CHUNK) {
+      const batch = recipients.slice(i, i + CHUNK);
+      const results = await Promise.allSettled(batch.map((to) => sendMail(to, subject, body)));
+      results.forEach((r) => (r.status === "fulfilled" ? sent++ : failed++));
+    }
+
+    res.status(200).json({ message: "Emails sent", data: { sent, failed, total: recipients.length }, statusCode: 200 });
+  } catch (error) {
+    console.error("mailAllMembers error:", error.message);
+    res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
 module.exports = {
   getMyMembership,
   purchaseMembership,
@@ -374,6 +419,7 @@ module.exports = {
   listMemberships,
   updateMembership,
   revokeMembership,
+  mailAllMembers,
   // shared with the order flow
   getActiveMembership,
   consumeCredit,
