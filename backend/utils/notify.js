@@ -18,16 +18,12 @@ async function notifyOrder(order, { subject, body }) {
     const d = order.attendee_details || {};
     const u = order.user_id && typeof order.user_id === "object" ? order.user_id : {};
     const email = d.email || u.email || null;
-    const phone = d.phone || u.phone || null;
-
-    const tasks = [];
+    // Email only. WhatsApp for booking events now goes through approved Utility
+    // templates (sendWaTemplate) at each call site — not the raw free-form path,
+    // which WhatsApp blocks outside the 24h window.
     if (email && subject && body) {
-      tasks.push(sendMail(email, subject, body).catch((e) => console.error("notifyOrder email:", e.message)));
+      await sendMail(email, subject, body).catch((e) => console.error("notifyOrder email:", e.message));
     }
-    if (phone && body) {
-      tasks.push(sendWhatsapp(phone, body).catch((e) => console.error("notifyOrder whatsapp:", e.message)));
-    }
-    await Promise.allSettled(tasks);
   } catch (e) {
     console.error("notifyOrder error:", e.message);
   }

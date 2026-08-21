@@ -504,6 +504,16 @@ const cancelOrder = async (req, res) => {
           `Your booking${ev} has been cancelled. ${refundNote || ""} Questions? ${SUPPORT}\n— IRL Social Hive`;
       }
       await notifyOrder(order, { subject: `Booking cancelled — ${order.event_id?.name || "IRL Social Hive"}`, body });
+
+      // WhatsApp (approved Utility template): {{3}} = concise refund status.
+      const waRefund = (order.refund?.id && order.refund?.status !== "failed")
+        ? `₹${order.refund.amount} (${refundPercent}%) is being refunded to your original payment method.`
+        : (refundNote || "No refund applies as per our policy.");
+      await sendWaTemplate(
+        order.attendee_details?.phone || order.user_id?.phone,
+        "TWILIO_WA_BOOKING_CANCELLED_SID",
+        { 1: firstName(order.attendee_details?.name || order.user_id?.name), 2: order.event_id?.name || "your event", 3: waRefund }
+      );
     } catch (e) { console.error("cancel notify:", e.message); }
 
     return res.status(200).json({
