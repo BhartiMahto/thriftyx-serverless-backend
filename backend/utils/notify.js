@@ -1,5 +1,5 @@
 const sendMail = require("./sendMail");
-const { sendWhatsapp } = require("./sendMessage");
+const { sendWhatsapp, sendWhatsappTemplate } = require("./sendMessage");
 
 /**
  * Best-effort notification for a single order. Resolves the recipient from the
@@ -70,4 +70,27 @@ function niceDate(d) {
 
 const SUPPORT = "help@thriftyx.com / +91-8125634704";
 
-module.exports = { notifyOrder, notifyUser, niceDate, SUPPORT };
+/**
+ * Best-effort send of an approved WhatsApp UTILITY template. `sidEnvKey` names
+ * the env var holding the template's Content SID; `variables` maps {{1}},{{2}}…
+ * Silently no-ops if the phone or template SID is missing, and never throws.
+ * @returns {Promise<boolean>} whether a message was sent.
+ */
+async function sendWaTemplate(phone, sidEnvKey, variables = {}) {
+  const sid = process.env[sidEnvKey];
+  if (!sid || !phone) return false;
+  try {
+    await sendWhatsappTemplate(phone, sid, variables);
+    return true;
+  } catch (e) {
+    console.error(`WA template ${sidEnvKey}:`, e.message);
+    return false;
+  }
+}
+
+/** First word of a name (for {{1}} in templates), or a friendly fallback. */
+function firstName(name) {
+  return String(name || "").trim().split(/\s+/)[0] || "there";
+}
+
+module.exports = { notifyOrder, notifyUser, niceDate, SUPPORT, sendWaTemplate, firstName };

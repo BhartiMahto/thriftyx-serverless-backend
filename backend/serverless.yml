@@ -77,6 +77,12 @@ provider:
     # Approved marketing template Content SIDs (Content Template Builder)
     TWILIO_WA_WB70_SID: ${env:TWILIO_WA_WB70_SID, ''}
     TWILIO_WA_BOGO_SID: ${env:TWILIO_WA_BOGO_SID, ''}
+    # Approved UTILITY template Content SIDs (booking notifications)
+    TWILIO_WA_BOOKING_PENDING_SID: ${env:TWILIO_WA_BOOKING_PENDING_SID, ''}
+    TWILIO_WA_BOOKING_CONFIRMED_SID: ${env:TWILIO_WA_BOOKING_CONFIRMED_SID, ''}
+    TWILIO_WA_BOOKING_CANCELLED_SID: ${env:TWILIO_WA_BOOKING_CANCELLED_SID, ''}
+    TWILIO_WA_REFUND_SID: ${env:TWILIO_WA_REFUND_SID, ''}
+    TWILIO_WA_EVENT_UPDATED_SID: ${env:TWILIO_WA_EVENT_UPDATED_SID, ''}
     SMTP_HOST: ${env:SMTP_HOST, ''}
     SMTP_PORT: ${env:SMTP_PORT, ''}
     SMTP_SECURE: ${env:SMTP_SECURE, ''}
