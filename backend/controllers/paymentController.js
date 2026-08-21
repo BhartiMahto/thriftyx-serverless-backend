@@ -1,5 +1,42 @@
 const crypto = require("crypto");
 const Order = require("../models/orderModel");
+const sendMail = require("../utils/sendMail");
+const { niceDate, SUPPORT } = require("../utils/notify");
+
+/**
+ * Emails the customer that their payment landed and their spot is pending host
+ * confirmation (bookings are curated, so a paid booking starts on the waitlist).
+ * Skipped for already-confirmed bookings. Email-only + best-effort.
+ */
+const notifyWaitlisted = async (order) => {
+  try {
+    if (order.applicationStatus === "confirmed") return;
+    await order.populate("user_id", "email name");
+    await order.populate("event_id", "name date start_time end_time venue_name venue city");
+    const to = order.attendee_details?.email || order.user_id?.email;
+    if (!to) return;
+    const ev = order.event_id || {};
+    const name = ev.name || "your event";
+    const when = ev.date ? niceDate(ev.date) : "";
+    const time = [ev.start_time, ev.end_time].filter(Boolean).join(" - ");
+    const where = [ev.venue_name || ev.venue, order.event_city || ev.city].filter(Boolean).join(", ");
+    const body = [
+      `Thanks for booking "${name}" — your payment has been received. 🎟`,
+      "",
+      ...(when ? [`Date: ${when}${time ? ` (${time})` : ""}`] : []),
+      ...(where ? [`Venue: ${where}`] : []),
+      "",
+      "Your spot is now with our host team for confirmation — we curate every gathering to keep the group balanced. You'll get a confirmation email with your entry ticket as soon as you're approved.",
+      "",
+      "No action needed from you for now.",
+      `Questions? ${SUPPORT}`,
+      "— IRL Social Hive",
+    ].join("\n");
+    await sendMail(to, `Booking received — pending confirmation — ${name}`, body);
+  } catch (e) {
+    console.error("waitlisted email:", e.message);
+  }
+};
 
 /**
  * ============================ MOCK PAYMENTS ============================
@@ -180,6 +217,9 @@ const verifyPayment = async (req, res) => {
     } catch (docErr) {
       console.error("Invoice generation failed for order", String(order._id), docErr.message);
     }
+
+    // Payment landed → tell the customer their spot is pending confirmation.
+    await notifyWaitlisted(order);
 
     return res.status(200).json({
       message: "Payment successful",
