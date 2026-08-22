@@ -293,6 +293,7 @@ const createEvent = async (req, res) => {
       end_time,
       coordinates,
       description,
+      shortDescription,
       instruction,
       status,
       stage,
@@ -374,6 +375,7 @@ const createEvent = async (req, res) => {
       // NOTE: the schema field is misspelled "cordinates".
       cordinates: parsedCoordinates,
       description,
+      shortDescription: shortDescription || "",
       instruction,
       status,
       // "interest" = Coming soon (collect interest, not bookable); "open" = normal.
@@ -396,7 +398,7 @@ const createEvent = async (req, res) => {
 /** Fields an admin may change on an event. */
 const EDITABLE_EVENT_FIELDS = [
   "name", "type", "city", "venue", "venue_name", "date", "start_time", "end_time",
-  "tickets", "description", "instruction", "min_age", "max_age", "cordinates", "image",
+  "tickets", "description", "shortDescription", "instruction", "min_age", "max_age", "cordinates", "image",
 ];
 
 const EVENT_STATUSES = ["Published", "Unpublished", "Cancelled"];

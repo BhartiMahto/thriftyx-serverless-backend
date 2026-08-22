@@ -106,6 +106,12 @@ const Event = new Schema({
         default: null,
         required: false
     },
+    // Short one/two-line summary shown on the events LIST card. Kept small so it
+    // can be returned by the list query (the full `description` is excluded there).
+    shortDescription: {
+        type: String,
+        default: "",
+    },
     instruction: {
         type: String,
         unique: false,
