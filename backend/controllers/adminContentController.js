@@ -368,7 +368,11 @@ const listBookings = async (req, res) => {
     const { limit, page, skip } = paging(req.query);
     const filter = {};
 
-    if (req.query.status && req.query.status !== "all") filter.status = req.query.status;
+    if (req.query.status && req.query.status !== "all") {
+      // "refunded" isn't an order status — it's any order with a refund on it.
+      if (req.query.status === "refunded") filter["refund.id"] = { $ne: null };
+      else filter.status = req.query.status;
+    }
     if (req.query.applicationStatus && req.query.applicationStatus !== "all") {
       filter.applicationStatus = req.query.applicationStatus;
     }
