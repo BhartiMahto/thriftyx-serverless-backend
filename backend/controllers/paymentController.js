@@ -334,6 +334,7 @@ function verifyGatewaySignature({ razorpay_order_id, razorpay_payment_id, razorp
 module.exports = {
   createPayment,
   verifyPayment,
+  notifyWaitlisted,
   refundOrderPayment,
   fetchRefundStatus,
   createGatewayOrder,

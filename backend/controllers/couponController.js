@@ -176,7 +176,8 @@ const evaluateCoupon = async (rawCode, subtotal, userId, opts = {}) => {
     coupon.discountType === "bogo" ||
     (coupon.cities && coupon.cities.length) ||
     (coupon.genders && coupon.genders.length) ||
-    (coupon.audience && coupon.audience !== "all");
+    (coupon.audience && coupon.audience !== "all") ||
+    Boolean(coupon.assignedTo); // personal coupon — restricted to one user
   if (targeted) {
     const seg = opts.segment !== undefined ? opts.segment : await userSegment(userId);
     const reason = targetingReason(coupon, seg, opts.eventCity, ctx);

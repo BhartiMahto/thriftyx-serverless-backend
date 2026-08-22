@@ -6,7 +6,7 @@ const Coupon = require("../models/couponModel");
 const { evaluateCoupon } = require("./couponController");
 const {
   refundOrderPayment, fetchRefundStatus,
-  createGatewayOrder, verifyGatewaySignature, RZP_KEY_ID,
+  createGatewayOrder, verifyGatewaySignature, RZP_KEY_ID, notifyWaitlisted,
 } = require("./paymentController");
 const { ensureTicket, ensureInvoice, attendeesOf } = require("../utils/documents");
 const { verifyTicket } = require("../utils/ticketToken");
@@ -278,6 +278,11 @@ const createOrder = async (req, res) => {
       ? 0
       : Math.max(0, round2(netSubtotal + sFee + sGst));
 
+    // A coupon that covers 100% leaves ₹0 to pay. Razorpay rejects ₹0 orders,
+    // so skip the gateway entirely and treat it like a paid booking awaiting
+    // host confirmation (status completed, applicationStatus waitlist).
+    const noPaymentNeeded = !passCoversWholeOrder && grandTotal <= 0;
+
     const order = await Order.create({
       user_id: req.user._id,
       event_id: cart.event_id,
@@ -296,7 +301,7 @@ const createOrder = async (req, res) => {
       paidByPass: passCoversWholeOrder,
       // True when a pass covered ONE seat of a paid group booking.
       passSeat: Boolean(claimedPass) && !passCoversWholeOrder,
-      status: passCoversWholeOrder ? "completed" : "in_progress",
+      status: (passCoversWholeOrder || noPaymentNeeded) ? "completed" : "in_progress",
       applicationStatus: passCoversWholeOrder ? "confirmed" : "waitlist",
       isTnC_accepted: true,
       // Booker / invoice "bill to" = the first attendee.
@@ -321,15 +326,23 @@ const createOrder = async (req, res) => {
         console.error("Pass ticket generation failed:", docErr.message);
       }
       await notifyBookingConfirmed(order);
+    } else if (noPaymentNeeded) {
+      // ₹0 (100%-coupon) booking: no gateway. Let them know it's received and
+      // pending host confirmation (same as a paid booking after payment).
+      try { await notifyWaitlisted(order); } catch (e) { console.error("free-booking notify:", e.message); }
     }
 
     return res.status(201).json({
-      message: passCoversWholeOrder ? "Booking confirmed with your Golden Pass" : "Order Created",
+      message: passCoversWholeOrder
+        ? "Booking confirmed with your Golden Pass"
+        : noPaymentNeeded ? "Booking received — no payment needed" : "Order Created",
       data: {
         _id: order._id,
         order_id: order.order_id,
         status: order.status,
         paidByPass: passCoversWholeOrder,
+        // No payment step needed (pass-covered, or a 100%-coupon ₹0 booking).
+        noPaymentNeeded,
         // Signals the client that a pass covered one seat of a paid group booking.
         passSeat: Boolean(claimedPass) && !passCoversWholeOrder,
         applicationStatus: order.applicationStatus,
