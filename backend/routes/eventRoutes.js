@@ -31,10 +31,15 @@ router.delete("/:id/interest", withDb, protectUser, eventController.unmarkIntere
  * event. All mutations now require an admin JWT.
  */
 
-router.post("/", withDb, protect, upload.single("image"), eventController.createEvent);
-// upload.single("image") is a no-op for JSON requests and captures the poster
-// when the edit form sends multipart (image replacement).
-router.patch("/:id", withDb, protect, upload.single("image"), eventController.updateEvent);
+// Two posters: `image` (wide/horizontal, detail hero) + `cardImage` (square 1:1,
+// list card). .fields is a no-op for JSON requests and captures either poster
+// when the form sends multipart.
+const eventPosters = upload.fields([
+  { name: "image", maxCount: 1 },
+  { name: "cardImage", maxCount: 1 },
+]);
+router.post("/", withDb, protect, eventPosters, eventController.createEvent);
+router.patch("/:id", withDb, protect, eventPosters, eventController.updateEvent);
 router.patch("/:id/status", withDb, protect, eventController.updateEventStatus);
 router.delete("/:id", withDb, protect, eventController.deleteEvent);
 

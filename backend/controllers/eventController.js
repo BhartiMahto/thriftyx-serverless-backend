@@ -334,7 +334,10 @@ const createEvent = async (req, res) => {
       "| content-type:", req.headers["content-type"],
       "| body keys:", Object.keys(req.body || {}));
 
-    const file = req.file;
+    // Two posters via upload.fields: `image` (wide, required) + `cardImage`
+    // (square 1:1, optional — the list card falls back to `image`).
+    const file = req.files?.image?.[0];
+    const cardFile = req.files?.cardImage?.[0];
     if (!file) {
       return res.status(400).json({ message: "File not uploaded" });
     }
@@ -353,6 +356,7 @@ const createEvent = async (req, res) => {
     };
 
     const result = await uploadToCloudinary(file.buffer);
+    const cardResult = cardFile ? await uploadToCloudinary(cardFile.buffer) : null;
 
     const newEvent = new Event({
       name,
@@ -376,6 +380,7 @@ const createEvent = async (req, res) => {
       stage: stage === "interest" ? "interest" : "open",
       schedule: normalizeSchedule(req.body.schedule),
       image: result.secure_url,
+      cardImage: cardResult ? cardResult.secure_url : null,
       createdBy: new Date(),
     });
 
@@ -418,14 +423,15 @@ const updateEvent = async (req, res) => {
     if (updates.min_age !== undefined) updates.min_age = Number(updates.min_age) || undefined;
     if (updates.max_age !== undefined) updates.max_age = Number(updates.max_age) || undefined;
 
-    // A new poster was uploaded → push it to Cloudinary and store the URL.
-    if (req.file) {
-      const uploaded = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream({ folder: "image" }, (e, r) => (e ? reject(e) : resolve(r)));
-        stream.end(req.file.buffer);
-      });
-      updates.image = uploaded.secure_url;
-    }
+    // New poster(s) uploaded (via upload.fields) → push to Cloudinary + store URL.
+    const uploadBuf = (buf) => new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream({ folder: "image" }, (e, r) => (e ? reject(e) : resolve(r)));
+      stream.end(buf);
+    });
+    const newImage = req.files?.image?.[0];
+    const newCardImage = req.files?.cardImage?.[0];
+    if (newImage) updates.image = (await uploadBuf(newImage.buffer)).secure_url;
+    if (newCardImage) updates.cardImage = (await uploadBuf(newCardImage.buffer)).secure_url;
 
     if (Object.keys(updates).length === 0 && req.body.locations === undefined) {
       return res.status(400).json({ message: "No editable fields provided", statusCode: 400 });

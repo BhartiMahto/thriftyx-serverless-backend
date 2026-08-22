@@ -62,6 +62,12 @@ const Event = new Schema({
         default: null,
         required: false
     },
+    // Square (1:1) poster for the events LIST card. Falls back to `image` (the
+    // wide/horizontal poster used on the detail hero) when not set.
+    cardImage: {
+        type: String,
+        default: null,
+    },
     date: {
         type: Date,
         unique: false,
