@@ -5,3 +5,6 @@ node_modules
 .env
 .env.*
 !.env.example
+
+# GA service-account key (bundled in Lambda package, not env)
+ga-sa-credentials.json

@@ -50,7 +50,9 @@ provider:
     PAYMENTS_MODE: ${env:PAYMENTS_MODE, 'mock'}
     # Admin Web Traffic (GA4 Data API)
     GA_PROPERTY_ID: ${env:GA_PROPERTY_ID, ''}
-    GA_SA_CREDENTIALS: ${env:GA_SA_CREDENTIALS, ''}
+    # GA_SA_CREDENTIALS is NOT here — the ~2KB JSON blows the Lambda 4KB env
+    # budget. It's bundled as backend/ga-sa-credentials.json and read at runtime
+    # (see webTrafficController). Keep it out of provider.environment.
     OTP_DEBUG: ${env:OTP_DEBUG, 'false'}
     DEFAULT_COUNTRY_CODE: ${env:DEFAULT_COUNTRY_CODE, '91'}
     # Storage (bucket only — creds come from the IAM role)

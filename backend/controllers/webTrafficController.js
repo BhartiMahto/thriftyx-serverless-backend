@@ -10,7 +10,17 @@ const { GoogleAuth } = require("google-auth-library");
  * page can show a "connect analytics" state instead of erroring.
  */
 const PROPERTY_ID = process.env.GA_PROPERTY_ID;
-const SA_CREDS = process.env.GA_SA_CREDENTIALS;
+// The GA service-account JSON is ~2KB — too large for the Lambda 4KB env budget
+// alongside everything else. So it's read from a bundled file
+// (backend/ga-sa-credentials.json, gitignored) when the env var isn't set.
+const SA_CREDS = (() => {
+  if (process.env.GA_SA_CREDENTIALS) return process.env.GA_SA_CREDENTIALS;
+  try {
+    return require("fs").readFileSync(require("path").join(__dirname, "..", "ga-sa-credentials.json"), "utf8");
+  } catch {
+    return null;
+  }
+})();
 
 let _auth = null;
 const getAuth = () => {
