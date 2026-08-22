@@ -251,7 +251,13 @@ const Order = new Schema({
         unique: false,
         required: false,
         default: new Date(),
-    }
+    },
+    // Timestamps of pre-event reminders already sent, so the scheduler never
+    // sends the same reminder twice (idempotency).
+    reminders: {
+        h24: { type: Date, default: null },
+        h3:  { type: Date, default: null },
+    },
 });
 
 module.exports = mongoose.model('order', Order);

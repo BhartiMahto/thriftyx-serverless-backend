@@ -83,6 +83,7 @@ provider:
     TWILIO_WA_BOOKING_CANCELLED_SID: ${env:TWILIO_WA_BOOKING_CANCELLED_SID, ''}
     TWILIO_WA_REFUND_SID: ${env:TWILIO_WA_REFUND_SID, ''}
     TWILIO_WA_EVENT_UPDATED_SID: ${env:TWILIO_WA_EVENT_UPDATED_SID, ''}
+    TWILIO_WA_EVENT_REMINDER_SID: ${env:TWILIO_WA_EVENT_REMINDER_SID, ''}
     SMTP_HOST: ${env:SMTP_HOST, ''}
     SMTP_PORT: ${env:SMTP_PORT, ''}
     SMTP_SECURE: ${env:SMTP_SECURE, ''}
@@ -135,3 +136,11 @@ functions:
     handler: handler.api
     events:
       - httpApi: '*'
+
+  # Pre-event reminders (24h + 3h before start). Runs every 15 min; idempotent
+  # via order.reminders flags. Longer timeout since it may send a batch.
+  reminders:
+    handler: handler.reminders
+    timeout: 300
+    events:
+      - schedule: rate(15 minutes)
