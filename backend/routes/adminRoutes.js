@@ -44,6 +44,11 @@ router.get("/events/:id/engagement", eventController.getEventEngagement);
 // Email selected attendees of an event (manual message / reminder).
 router.post("/events/:id/message", orderController.sendEventMessage);
 
+// Admin notifications: operational alerts feed + message delivery log.
+const notificationController = require("../controllers/notificationController");
+router.get("/alerts", notificationController.getAdminAlerts);
+router.get("/message-history", userController.getHistory);
+
 // --- Cities, blogs, ratings, bookings, customers, support ---
 const content = require("../controllers/adminContentController");
 
