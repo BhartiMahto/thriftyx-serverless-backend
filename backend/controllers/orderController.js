@@ -1,6 +1,7 @@
 const Order = require("../models/orderModel");
 const Cart = require("../models/cartModel");
 const Event = require("../models/EventModel");
+const User = require("../models/userModel");
 const { ticketsForCity, findTicket, orderCityVenue } = require("../utils/tickets");
 const Coupon = require("../models/couponModel");
 const { evaluateCoupon } = require("./couponController");
@@ -116,6 +117,47 @@ const toAttendeeRows = (order) => {
     venue: orderCityVenue(order).venue || null,
     grandTotal: order.grand_total ?? 0,
   }));
+};
+
+/**
+ * Copy the booker's checkout details onto their User profile so the admin
+ * Customers page (sourced from the users collection) shows them.
+ *
+ * FILL-IF-BLANK: only fields that are currently empty on the profile are set,
+ * so we never clobber values the user deliberately entered on their Profile
+ * page. Formats mirror profileController.updateMyProfile (DOB -> Date,
+ * reasonToJoin trimmed/capped at 200). Best-effort: a failure here must never
+ * break the booking, so the caller wraps it in try/catch and it also guards
+ * itself. This is the reliable server-side counterpart to the client's
+ * best-effort saveProfileFromForm() call, which can silently fail (session
+ * timing, network) and leave the profile blank.
+ */
+const syncProfileFromBooking = async (userId, booker) => {
+  if (!userId || !booker) return;
+  const u = await User.findById(userId)
+    .select("name city gender DOB maritalStatus reasonToJoin")
+    .lean();
+  if (!u) return;
+
+  const isBlank = (v) => v === null || v === undefined || v === "";
+  const str = (v) => (v === null || v === undefined ? "" : String(v).trim());
+  const set = {};
+
+  if (isBlank(u.name) && str(booker.name)) set.name = str(booker.name);
+  if (isBlank(u.city) && str(booker.city)) set.city = str(booker.city);
+  if (isBlank(u.gender) && str(booker.gender)) set.gender = str(booker.gender);
+  if (isBlank(u.maritalStatus) && str(booker.maritalStatus)) set.maritalStatus = str(booker.maritalStatus);
+  if (isBlank(u.reasonToJoin) && str(booker.reasonToJoin)) {
+    set.reasonToJoin = str(booker.reasonToJoin).slice(0, 200);
+  }
+  if (isBlank(u.DOB) && booker.DOB) {
+    const d = new Date(booker.DOB);
+    if (!Number.isNaN(d.getTime()) && d.getTime() <= Date.now()) set.DOB = d;
+  }
+
+  if (Object.keys(set).length) {
+    await User.updateOne({ _id: userId }, { $set: set });
+  }
 };
 
 /** POST /api/order — customer places an order from a cart item. */
@@ -316,6 +358,15 @@ const createOrder = async (req, res) => {
     });
 
     await Cart.findByIdAndDelete(cart_item_id);
+
+    // Seed the booker's profile from what they just entered at checkout, so the
+    // admin Customers page (sourced from the users collection) isn't blank.
+    // Fill-if-blank + best-effort: never let a profile-sync hiccup fail a booking.
+    try {
+      await syncProfileFromBooking(req.user._id, attendeeList[0]);
+    } catch (e) {
+      console.error("profile sync from booking failed:", e.message);
+    }
 
     // A fully pass-covered (solo) booking is already paid + confirmed → issue
     // the ticket now. A group booking waits for payment + host confirmation.
