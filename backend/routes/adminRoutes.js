@@ -41,6 +41,9 @@ router.get(
 // Wishlist + share engagement for one event (who wishlisted, share counts).
 router.get("/events/:id/engagement", eventController.getEventEngagement);
 
+// Email selected attendees of an event (manual message / reminder).
+router.post("/events/:id/message", orderController.sendEventMessage);
+
 // --- Cities, blogs, ratings, bookings, customers, support ---
 const content = require("../controllers/adminContentController");
 

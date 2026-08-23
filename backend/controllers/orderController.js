@@ -1451,8 +1451,66 @@ const changeBookingCity = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/admin/events/:id/message — email selected attendees of an event.
+ * Body: { ids: string[] (attendee row ids "<orderId>:<idx>" or plain order ids),
+ *         subject?, content }.
+ *
+ * Dedupes to ONE email per order (the booker) so a multi-ticket booking isn't
+ * emailed twice. `{name}` in the content is replaced with the recipient's first
+ * name. Best-effort per recipient; returns counts.
+ *
+ * Email only: free-form WhatsApp is blocked by Meta outside the 24h service
+ * window, so ad-hoc WhatsApp isn't offered here — automated reminders use the
+ * approved event_reminder template instead (see reminderController).
+ */
+const sendEventMessage = async (req, res) => {
+  try {
+    const { ids, subject, content } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: "No recipients selected", statusCode: 400 });
+    }
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ message: "Message content is required", statusCode: 400 });
+    }
+
+    // Attendee row ids are "<orderId>:<index>"; reduce to unique order ids.
+    const orderIds = [...new Set(ids.map((x) => String(x).split(":")[0]))];
+    const orders = await Order.find({ _id: { $in: orderIds }, event_id: req.params.id })
+      .populate("user_id", "name email");
+
+    const subj = String(subject || "").trim() || "A message about your booking";
+    let sent = 0, failed = 0, skipped = 0;
+
+    for (const o of orders) {
+      const email = o.attendee_details?.email || o.user_id?.email;
+      if (!email) { skipped++; continue; }
+      const who = firstName(o.attendee_details?.name || o.user_id?.name);
+      const body = String(content).replace(/\{name\}/gi, who);
+      try {
+        await sendMail(email, subj, body);
+        sent++;
+      } catch (e) {
+        failed++;
+        console.error("sendEventMessage:", String(o._id), e.message);
+      }
+    }
+
+    return res.status(200).json({
+      message: "Messages sent",
+      data: { sent, failed, skipped, orders: orders.length },
+      statusCode: 200,
+    });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    console.error("sendEventMessage error:", err);
+    return res.status(500).json({ message: "Internal server error", statusCode: 500 });
+  }
+};
+
 module.exports = {
   getAllOrders,
+  sendEventMessage,
   customerCount,
   paidCustomerCount,
   pendingCustomerCount,

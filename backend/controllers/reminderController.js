@@ -4,10 +4,10 @@ const sendMail = require("../utils/sendMail");
 const { niceDate, SUPPORT, sendWaTemplate, firstName } = require("../utils/notify");
 
 /**
- * Scheduled pre-event reminders (24h + 3h before start), sent on WhatsApp + email.
- * Driven by a cron Lambda (see handler.reminders / serverless.yml). Idempotent:
- * each order records reminders.h24 / reminders.h3 so a reminder is sent once even
- * though the cron runs every 15 min.
+ * Scheduled pre-event reminders (24h + 3h + 1h before start), sent on WhatsApp +
+ * email. Driven by a cron Lambda (see handler.reminders / serverless.yml).
+ * Idempotent: each order records reminders.h24 / reminders.h3 / reminders.h1 so a
+ * reminder is sent once even though the cron runs every 15 min.
  */
 
 const IST_OFFSET_MS = 5.5 * 3600 * 1000;
@@ -52,16 +52,18 @@ async function sendDueReminders() {
     .select("name date start_time end_time venue_name venue city locations")
     .lean();
 
-  let sent24 = 0, sent3 = 0, failed = 0, processed = 0;
+  let sent24 = 0, sent3 = 0, sent1 = 0, failed = 0, processed = 0;
 
   for (const ev of events) {
     const start = eventStart(ev);
     if (!start) continue;
     const hoursToStart = (start.getTime() - now) / 3600000;
-    // Which reminder (if any) is due for this event right now?
+    // Which reminder (if any) is due for this event right now? Three
+    // non-overlapping bands: ~24h, ~3h, and a ~1h "starting soon" late nudge.
     let kind = null;
     if (hoursToStart > 3 && hoursToStart <= 24) kind = "h24";
-    else if (hoursToStart > 0 && hoursToStart <= 3) kind = "h3";
+    else if (hoursToStart > 1 && hoursToStart <= 3) kind = "h3";
+    else if (hoursToStart > 0 && hoursToStart <= 1) kind = "h1";
     if (!kind) continue;
 
     const orders = await Order.find({
@@ -86,9 +88,10 @@ async function sendDueReminders() {
       const time = ev.start_time || "";
       const where = venueFor(ev, o.event_city || ev.city || "");
       // Single-line timing phrase (WhatsApp variables can't contain newlines).
-      const whenPhrase = kind === "h3"
-        ? `today${time ? ` at ${time}` : ""} — starting soon`
-        : `${niceDate(ev.date)}${time ? ` at ${time}` : ""}`;
+      let whenPhrase;
+      if (kind === "h1") whenPhrase = `today${time ? ` at ${time}` : ""} — starting in about an hour`;
+      else if (kind === "h3") whenPhrase = `today${time ? ` at ${time}` : ""} — starting soon`;
+      else whenPhrase = `${niceDate(ev.date)}${time ? ` at ${time}` : ""}`;
 
       try {
         await sendWaTemplate(phone, "TWILIO_WA_EVENT_REMINDER_SID", {
@@ -108,7 +111,9 @@ async function sendDueReminders() {
           await sendMail(email, `Reminder — ${ev.name || "IRL Social Hive"}`, body).catch(() => {});
         }
         await Order.updateOne({ _id: o._id }, { $set: { [`reminders.${kind}`]: new Date() } });
-        kind === "h24" ? sent24++ : sent3++;
+        if (kind === "h24") sent24++;
+        else if (kind === "h3") sent3++;
+        else sent1++;
       } catch (e) {
         failed++;
         console.error("reminder send failed:", String(o._id), e.message);
@@ -116,7 +121,7 @@ async function sendDueReminders() {
     }
   }
 
-  return { sent24, sent3, failed, events: events.length };
+  return { sent24, sent3, sent1, failed, events: events.length };
 }
 
 module.exports = { sendDueReminders, eventStart };

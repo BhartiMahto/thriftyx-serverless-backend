@@ -257,6 +257,8 @@ const Order = new Schema({
     reminders: {
         h24: { type: Date, default: null },
         h3:  { type: Date, default: null },
+        // 1-hour "starting soon" late nudge.
+        h1:  { type: Date, default: null },
     },
 });
 
