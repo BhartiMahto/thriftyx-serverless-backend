@@ -38,6 +38,9 @@ router.get(
   eventController.getEvents
 );
 
+// Wishlist + share engagement for one event (who wishlisted, share counts).
+router.get("/events/:id/engagement", eventController.getEventEngagement);
+
 // --- Cities, blogs, ratings, bookings, customers, support ---
 const content = require("../controllers/adminContentController");
 

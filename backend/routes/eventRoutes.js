@@ -16,15 +16,24 @@ const withDb = async (req, res, next) => {
 router.get("/", withDb, eventController.getEvents);
 // The signed-in user's interested event ids — must precede "/:id".
 router.get("/interested/mine", withDb, protectUser, eventController.myInterests);
+// The signed-in user's wishlisted event ids — must precede "/:id".
+router.get("/wishlist/mine", withDb, protectUser, eventController.myWishlist);
 // More specific routes first so they aren't captured by "/:id".
 router.get("/:id/going", withDb, eventController.getEventGoing);
 router.get("/:id/interest", withDb, optionalUser, eventController.getInterest);
+router.get("/:id/wishlist", withDb, optionalUser, eventController.getWishlist);
 router.get("/:id", withDb, eventController.getEventById);
 
 /* ---------------- Interest ("Coming soon") — signed-in users ---------------- */
 
 router.post("/:id/interest", withDb, protectUser, eventController.markInterest);
 router.delete("/:id/interest", withDb, protectUser, eventController.unmarkInterest);
+
+/* ---------------- Wishlist (signed-in) + Share (optional auth) ---------------- */
+
+router.post("/:id/wishlist", withDb, protectUser, eventController.addWishlist);
+router.delete("/:id/wishlist", withDb, protectUser, eventController.removeWishlist);
+router.post("/:id/share", withDb, optionalUser, eventController.recordShare);
 
 /* ---------------- Admin-only writes ----------------
  * POST /api/events was previously unauthenticated — anyone could create an

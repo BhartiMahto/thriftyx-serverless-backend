@@ -2,6 +2,7 @@ const { Reject } = require("twilio/lib/twiml/VoiceResponse");
 const Event = require("../models/EventModel");
 const Order = require("../models/orderModel");
 const EventInterest = require("../models/eventInterestModel");
+const EventEngagement = require("../models/eventEngagementModel");
 const User = require("../models/userModel");
 const cloudinary = require("../utils/cloudinary");
 const streamifier = require("streamifier");
@@ -874,6 +875,144 @@ const myInterests = async (req, res) => {
   }
 };
 
+/* ------------------------------ Wishlist + Share ------------------------------ */
+
+/** POST /api/events/:id/wishlist — signed-in user saves the event. Idempotent. */
+const addWishlist = async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.id).select("_id");
+    if (!event) return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    await EventEngagement.updateOne(
+      { event_id: event._id, user_id: req.user._id, type: "wishlist" },
+      { $setOnInsert: { event_id: event._id, user_id: req.user._id, type: "wishlist" } },
+      { upsert: true }
+    );
+    const count = await EventEngagement.countDocuments({ event_id: event._id, type: "wishlist" });
+    return res.status(200).json({ message: "Added to wishlist", data: { wishlisted: true, count }, statusCode: 200 });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    if (err.code === 11000) {
+      const count = await EventEngagement.countDocuments({ event_id: req.params.id, type: "wishlist" });
+      return res.status(200).json({ message: "Added to wishlist", data: { wishlisted: true, count }, statusCode: 200 });
+    }
+    console.error("addWishlist error:", err);
+    return res.status(500).json({ message: "Internal server error", statusCode: 500 });
+  }
+};
+
+/** DELETE /api/events/:id/wishlist — signed-in user removes the event (toggle off). */
+const removeWishlist = async (req, res) => {
+  try {
+    await EventEngagement.deleteOne({ event_id: req.params.id, user_id: req.user._id, type: "wishlist" });
+    const count = await EventEngagement.countDocuments({ event_id: req.params.id, type: "wishlist" });
+    return res.status(200).json({ message: "Removed from wishlist", data: { wishlisted: false, count }, statusCode: 200 });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    console.error("removeWishlist error:", err);
+    return res.status(500).json({ message: "Internal server error", statusCode: 500 });
+  }
+};
+
+/**
+ * GET /api/events/:id/wishlist — count + whether the current user has wishlisted
+ * it (optional auth: `wishlisted` is false for guests).
+ */
+const getWishlist = async (req, res) => {
+  try {
+    const eventId = req.params.id;
+    const [count, mine] = await Promise.all([
+      EventEngagement.countDocuments({ event_id: eventId, type: "wishlist" }),
+      req.user ? EventEngagement.exists({ event_id: eventId, user_id: req.user._id, type: "wishlist" }) : null,
+    ]);
+    return res.status(200).json({ message: "Wishlist", data: { count, wishlisted: Boolean(mine) }, statusCode: 200 });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    console.error("getWishlist error:", err);
+    return res.status(500).json({ message: "Internal server error", statusCode: 500 });
+  }
+};
+
+/** GET /api/events/wishlist/mine — event ids the signed-in user has wishlisted. */
+const myWishlist = async (req, res) => {
+  try {
+    const rows = await EventEngagement.find({ user_id: req.user._id, type: "wishlist" }).select("event_id").lean();
+    return res.status(200).json({ message: "My wishlist", data: rows.map((r) => String(r.event_id)), statusCode: 200 });
+  } catch (err) {
+    console.error("myWishlist error:", err);
+    return res.status(500).json({ message: "Internal server error", statusCode: 500 });
+  }
+};
+
+/**
+ * POST /api/events/:id/share — record that someone tapped Share (copies the
+ * link). Optional auth: attributed to the user when signed in, else anonymous.
+ * Repeatable (no dedupe) — it's a click signal, not a saved state.
+ */
+const recordShare = async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.id).select("_id");
+    if (!event) return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    await EventEngagement.create({
+      event_id: event._id,
+      user_id: req.user ? req.user._id : null,
+      type: "share",
+      channel: typeof req.body?.channel === "string" ? req.body.channel.slice(0, 40) : "link",
+    });
+    const count = await EventEngagement.countDocuments({ event_id: event._id, type: "share" });
+    return res.status(200).json({ message: "Share recorded", data: { count }, statusCode: 200 });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    console.error("recordShare error:", err);
+    return res.status(500).json({ message: "Internal server error", statusCode: 500 });
+  }
+};
+
+/**
+ * GET /api/admin/events/:id/engagement — admin view of who wishlisted the event
+ * and share activity. Wishlist lists the actual people; share is a count plus the
+ * signed-in sharers (guests are counted but have no identity to show).
+ */
+const getEventEngagement = async (req, res) => {
+  try {
+    const eventId = req.params.id;
+    const [wishlistRows, shareRows] = await Promise.all([
+      EventEngagement.find({ event_id: eventId, type: "wishlist" })
+        .populate("user_id", "name email phone")
+        .sort({ createdAt: -1 })
+        .lean(),
+      EventEngagement.find({ event_id: eventId, type: "share" })
+        .populate("user_id", "name email phone")
+        .sort({ createdAt: -1 })
+        .lean(),
+    ]);
+
+    const person = (r) => ({
+      userId: r.user_id?._id ? String(r.user_id._id) : null,
+      name: r.user_id?.name || null,
+      email: r.user_id?.email || null,
+      phone: r.user_id?.phone || null,
+      at: r.createdAt,
+    });
+
+    const wishlist = wishlistRows.filter((r) => r.user_id).map(person);
+    const shareSignedIn = shareRows.filter((r) => r.user_id).map(person);
+    const shareAnonymous = shareRows.length - shareSignedIn.length;
+
+    return res.status(200).json({
+      message: "Event engagement",
+      data: {
+        wishlist: { count: wishlist.length, users: wishlist },
+        share: { count: shareRows.length, anonymous: shareAnonymous, users: shareSignedIn },
+      },
+      statusCode: 200,
+    });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    console.error("getEventEngagement error:", err);
+    return res.status(500).json({ message: "Internal server error", statusCode: 500 });
+  }
+};
+
 /**
  * POST /api/admin/events/:id/go-live — open a Coming-soon event for booking and
  * notify everyone who registered interest (email + WhatsApp). Requires the event
@@ -949,5 +1088,11 @@ module.exports = {
   unmarkInterest,
   getInterest,
   myInterests,
+  addWishlist,
+  removeWishlist,
+  getWishlist,
+  myWishlist,
+  recordShare,
+  getEventEngagement,
   goLive,
 };
