@@ -57,6 +57,10 @@ const Event = new Schema({
                     price: { type: Number, default: 0 },
                     quantity: { type: Number, default: 0 },
                     description: { type: String, default: "" },
+                    // Show/hide on the customer site WITHOUT deleting (which would
+                    // drop existing bookings). Sell Early Bird first, flip Regular
+                    // live later. false = hidden/not bookable; stays in the DB.
+                    active: { type: Boolean, default: true },
                 }],
                 default: [],
             },
@@ -137,6 +141,20 @@ const Event = new Schema({
         default: 0,
         required: false
     },
+    // Admin-defined, per-event checkout questions. Different event types (Digital
+    // Detox, Single Parent, Founders Connect, Dinner with Strangers…) ask
+    // different things, so each event carries its own list. Every attendee
+    // answers these at checkout, in addition to the standard fields. The captured
+    // answers are stored per-attendee on the Order with the label denormalised,
+    // so a past order keeps the exact question that was asked even if it is later
+    // edited or removed here.
+    checkoutQuestions: [{
+        key: { type: String },                    // stable id within the event
+        label: { type: String },                  // the question shown to the attendee
+        type: { type: String, default: "text" },  // text | paragraph | select | boolean | multiselect
+        options: [{ type: String }],              // choices for select / multiselect
+        required: { type: Boolean, default: false },
+    }],
     cordinates: {
         type: Object,
         unique: false,

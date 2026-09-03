@@ -193,6 +193,14 @@ const Order = new Schema({
         maritalStatus: { type: String, default: null },
         // Why the attendee wants to join THIS event — used by hosts to curate the waitlist.
         reasonToJoin: { type: String, default: null },
+        // Answers to the event's custom checkout questions. Label is denormalised
+        // so the order keeps the exact question that was asked. value is a string
+        // (text/paragraph/select/boolean) or an array of strings (multiselect).
+        answers: [{
+            key: { type: String, default: null },
+            label: { type: String, default: null },
+            value: { type: Schema.Types.Mixed, default: null },
+        }],
     },
     // One entry PER TICKET when the booking covers more than one person. Each
     // gets its own QR (a ticket-PDF page) and is checked in individually.
@@ -206,6 +214,12 @@ const Order = new Schema({
         city: { type: String, default: null },
         maritalStatus: { type: String, default: null },
         reasonToJoin: { type: String, default: null },
+        // Answers to the event's custom checkout questions (see attendee_details).
+        answers: [{
+            key: { type: String, default: null },
+            label: { type: String, default: null },
+            value: { type: Schema.Types.Mixed, default: null },
+        }],
         checkedIn: { type: Boolean, default: false },
         checkedInAt: { type: Date, default: null },
     }],

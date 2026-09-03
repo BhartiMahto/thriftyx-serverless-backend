@@ -15,6 +15,20 @@ const { consumeCredit, refundCredit } = require("./membershipController");
 const { notifyOrder, niceDate, SUPPORT, sendWaTemplate, firstName } = require("../utils/notify");
 const sendMail = require("../utils/sendMail");
 
+/** Age in whole years from a date-of-birth. null if empty/invalid. Mirrors the
+ *  client's ageFromDob so the server derives age authoritatively from DOB rather
+ *  than trusting a client-supplied number. */
+const ageFromDob = (dob) => {
+  if (!dob) return null;
+  const born = new Date(dob);
+  if (Number.isNaN(born.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - born.getFullYear();
+  const m = now.getMonth() - born.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < born.getDate())) age -= 1;
+  return age >= 0 && age < 150 ? age : null;
+};
+
 /**
  * Emails the customer that their booking is confirmed, with the event details
  * and a link to their ticket. Email-only + best-effort (never breaks the flow).
@@ -103,6 +117,10 @@ const toAttendeeRows = (order) => {
     age: p.age ?? null,
     maritalStatus: p.maritalStatus || null,
     reasonToJoin: p.reasonToJoin || null,
+    // Answers to the event's custom checkout questions (label denormalised).
+    answers: Array.isArray(p.answers)
+      ? p.answers.map((x) => ({ key: x.key || null, label: x.label || null, value: x.value ?? null }))
+      : [],
     ticketType: total > 1 ? `${ticketType} (${i + 1}/${total})` : ticketType,
     // Admin shows a binary paid/unpaid; backend tracks a 4-state order status.
     paymentStatus: order.status === "completed" ? "paid" : "unpaid",
@@ -171,16 +189,34 @@ const createOrder = async (req, res) => {
     // ticket); older callers send a single `attendee_details`. Either way we
     // store both: `attendees[]` for per-person check-in, `attendee_details` for
     // the booker/invoice.
+    // Normalise custom-question answers: keep only entries with a key, coerce the
+    // value to a string (or an array of strings for multiselect), and cap length.
+    const cleanAnswers = (arr) => Array.isArray(arr)
+      ? arr
+          .map((x) => ({
+            key: x?.key ? String(x.key) : null,
+            label: x?.label ? String(x.label).slice(0, 300) : null,
+            value: Array.isArray(x?.value)
+              ? x.value.map((v) => String(v).slice(0, 500)).slice(0, 50)
+              : (x?.value !== undefined && x?.value !== null ? String(x.value).slice(0, 2000) : null),
+          }))
+          .filter((x) => x.key)
+      : undefined;
+
     const cleanAttendee = (a) => ({
       name: a?.name ?? null,
       email: a?.email ?? null,
       phone: a?.phone ?? null,
       gender: a?.gender ?? null,
-      age: a?.age ?? null,
+      // Derive age from DOB (authoritative); fall back to the client's number only
+      // when no DOB is present (legacy callers), so the stored age can't contradict
+      // the stored DOB.
+      age: ageFromDob(a?.DOB) ?? (a?.age ?? null),
       DOB: a?.DOB ?? null,
       city: a?.city ?? null,
       maritalStatus: a?.maritalStatus ?? null,
       reasonToJoin: a?.reasonToJoin ? String(a.reasonToJoin).trim().slice(0, 1000) : null,
+      answers: cleanAnswers(a?.answers),
     });
     const attendeeList = Array.isArray(attendees) && attendees.length
       ? attendees.map(cleanAttendee)
@@ -218,6 +254,56 @@ const createOrder = async (req, res) => {
         message: "This event isn't open for booking yet.",
         statusCode: 400,
       });
+    }
+
+    // Age gate — every attendee's age must fall within the event's allowed range:
+    // no older, no younger. Defence-in-depth; the checkout UI already enforces
+    // this, but a direct API call must not bypass it, so the age is RE-DERIVED
+    // from the attendee's DOB here (the client-supplied age is never trusted).
+    // The floor mirrors the client: an explicit min_age, else the platform floor
+    // of 18. max 0 = no upper limit. Attendees with no/invalid DOB (legacy
+    // callers) can't be checked, so they're skipped.
+    {
+      const minA = Number(event.min_age) || 18;
+      const maxA = Number(event.max_age) || 0;
+      for (const a of attendeeList) {
+        const age = ageFromDob(a.DOB);
+        if (age == null) continue;
+        if (age < minA) {
+          return res.status(400).json({
+            message: `This event is for ages ${minA}${maxA ? `–${maxA}` : "+"}. An attendee's age (${age}) is below the minimum.`,
+            statusCode: 400,
+          });
+        }
+        if (maxA && age > maxA) {
+          return res.status(400).json({
+            message: `This event is for ages ${minA}–${maxA}. An attendee's age (${age}) is above the maximum.`,
+            statusCode: 400,
+          });
+        }
+      }
+    }
+
+    // Required custom questions must be answered by every attendee.
+    {
+      const requiredQs = (event.checkoutQuestions || []).filter((q) => q && q.required && q.key);
+      if (requiredQs.length) {
+        const isBlankAnswer = (v) =>
+          v === undefined || v === null ||
+          (Array.isArray(v) ? v.length === 0 : String(v).trim() === "");
+        for (const a of attendeeList) {
+          const ans = Array.isArray(a.answers) ? a.answers : [];
+          for (const q of requiredQs) {
+            const hit = ans.find((x) => x.key === q.key);
+            if (!hit || isBlankAnswer(hit.value)) {
+              return res.status(400).json({
+                message: `Please answer: "${q.label || q.key}" for every attendee.`,
+                statusCode: 400,
+              });
+            }
+          }
+        }
+      }
     }
 
     // How many tickets on this booking (a pass covers only ONE — the holder's).

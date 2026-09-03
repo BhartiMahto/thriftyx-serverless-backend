@@ -27,6 +27,12 @@ function passPricing() {
   return { base, gst, total };
 }
 
+/** Public plan shape shown on the Golden Pass page (pricing + terms, no user data). */
+function buildPlan() {
+  const p = passPricing();
+  return { tier: "golden", events: PASS.events, days: PASS.days, price: p.base, gst: p.gst, total: p.total };
+}
+
 /** Builds + stores a GST invoice PDF for a pass purchase. Non-fatal. */
 async function generatePassInvoice(membership, user) {
   if (!s3.isConfigured) return null;
@@ -166,11 +172,25 @@ const getMyMembership = async (req, res) => {
       message: "Membership",
       data: m ? publicMembership(m) : null,
       // Pricing so the site can show a purchase CTA when there's no pass.
-      plan: (() => { const p = passPricing(); return { tier: "golden", events: PASS.events, days: PASS.days, price: p.base, gst: p.gst, total: p.total }; })(),
+      plan: buildPlan(),
       statusCode: 200,
     });
   } catch (error) {
     console.error("getMyMembership error:", error);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+/**
+ * GET /api/membership/plan — public Golden Pass pricing (no auth).
+ * Lets guests see the price/terms before signing in; login is only required
+ * to actually purchase.
+ */
+const getPlan = async (_req, res) => {
+  try {
+    return res.status(200).json({ message: "Plan", data: buildPlan(), statusCode: 200 });
+  } catch (error) {
+    console.error("getPlan error:", error);
     return res.status(500).json({ message: "Server Error", statusCode: 500 });
   }
 };
@@ -413,6 +433,7 @@ const mailAllMembers = async (req, res) => {
 };
 
 module.exports = {
+  getPlan,
   getMyMembership,
   purchaseMembership,
   verifyMembership,

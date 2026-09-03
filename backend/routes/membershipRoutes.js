@@ -9,6 +9,9 @@ const withDb = async (req, res, next) => {
   next();
 };
 
+// Public — pricing/terms so guests can view the Golden Pass before signing in.
+router.get("/plan", withDb, membershipController.getPlan);
+
 // Customer Golden Pass endpoints.
 router.get("/me", withDb, protectUser, membershipController.getMyMembership);
 router.post("/purchase", withDb, protectUser, membershipController.purchaseMembership);

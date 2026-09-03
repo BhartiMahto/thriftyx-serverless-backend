@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { capitalizeText } = require('./capitalizeText');
 const { toWhatsAppAddress } = require('./phone');
+const { isDeployed, DEV_NOTIFY_EMAIL, DEV_NOTIFY_PHONE } = require('./runtimeEnv');
 const {
     client,
     isConfigured,
@@ -51,6 +52,12 @@ const getTransporter = () => {
  * even when nothing was delivered.
  */
 const sendOtpToEmail = async (otp, email, name) => {
+    // Local/dev DB: log the OTP (handy) AND redirect the email to the test inbox
+    // so it never reaches the real user.
+    if (!isDeployed) {
+        console.log(`[local] OTP for ${email} = ${otp} (email → ${DEV_NOTIFY_EMAIL})`);
+        email = DEV_NOTIFY_EMAIL;
+    }
     if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
         throw new Error('SMTP is not configured (SMTP_HOST / SMTP_USER)');
     }
@@ -67,6 +74,10 @@ const sendOtpToEmail = async (otp, email, name) => {
 
 /** Sends an OTP over WhatsApp via Twilio. Rejects if delivery fails. */
 const sendMessageToWhatsapp = async (otp, number) => {
+    if (!isDeployed) {
+        console.log(`[local] OTP for ${number} = ${otp} (WhatsApp → ${DEV_NOTIFY_PHONE})`);
+        number = DEV_NOTIFY_PHONE;
+    }
     if (!isConfigured) {
         throw new Error('Twilio is not configured (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN)');
     }

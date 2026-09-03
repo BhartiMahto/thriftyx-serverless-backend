@@ -1,4 +1,5 @@
 const { toE164, toWhatsAppAddress } = require("./phone");
+const { isDeployed, DEV_NOTIFY_PHONE } = require("./runtimeEnv");
 const {
   client,
   isConfigured,
@@ -16,6 +17,8 @@ const {
  */
 
 const sendWhatsapp = async (phone, message) => {
+  // Local/dev DB: redirect to the test number so real people are never messaged.
+  if (!isDeployed) { console.log(`[local] WhatsApp redirected → ${DEV_NOTIFY_PHONE} (was ${phone})`); phone = DEV_NOTIFY_PHONE; }
   if (!isConfigured) {
     throw new Error("Twilio is not configured (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN)");
   }
@@ -41,6 +44,7 @@ const sendWhatsapp = async (phone, message) => {
  * caller can record per-recipient status.
  */
 const sendWhatsappTemplate = async (phone, contentSid, variables = {}) => {
+  if (!isDeployed) { console.log(`[local] WA template redirected → ${DEV_NOTIFY_PHONE} (was ${phone}) sid=${contentSid} vars=${JSON.stringify(variables)}`); phone = DEV_NOTIFY_PHONE; }
   if (!isConfigured) throw new Error("Twilio is not configured");
   if (!contentSid) throw new Error("No WhatsApp template Content SID configured");
   const to = toWhatsAppAddress(phone);
@@ -54,6 +58,7 @@ const sendWhatsappTemplate = async (phone, contentSid, variables = {}) => {
 };
 
 const sendSMS = async (phone, message) => {
+  if (!isDeployed) { console.log(`[local] SMS redirected → ${DEV_NOTIFY_PHONE} (was ${phone})`); phone = DEV_NOTIFY_PHONE; }
   if (!isConfigured) {
     throw new Error("Twilio is not configured (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN)");
   }

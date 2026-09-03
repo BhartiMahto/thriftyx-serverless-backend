@@ -1,4 +1,5 @@
 const nodemailer = require("nodemailer");
+const { isDeployed, DEV_NOTIFY_EMAIL } = require("./runtimeEnv");
 
 /**
  * SMTP credentials were hardcoded here and committed to git; they now come from
@@ -30,14 +31,24 @@ const getTransporter = () => {
  *        ticket/invoice PDFs on their S3 URLs.
  */
 const sendMail = async (to, subject, message, attachments) => {
+  // Local/dev DB runs against a COPY of prod data (real emails). Redirect ALL
+  // mail to the test inbox so nothing reaches real users — still delivered so
+  // you can see it. The deployed Lambda sends to the real address.
+  let realTo = to;
+  let realSubject = subject;
+  if (!isDeployed) {
+    realTo = DEV_NOTIFY_EMAIL;
+    realSubject = `[DEV → ${to}] ${subject}`;
+    console.log(`[local] EMAIL redirected → ${DEV_NOTIFY_EMAIL} (was ${to})`);
+  }
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
     throw new Error("SMTP is not configured (SMTP_HOST / SMTP_USER)");
   }
 
   const mail = {
     from: process.env.MAIL_FROM || '"Thrifty X" <no-reply@thriftyx.com>',
-    to,
-    subject,
+    to: realTo,
+    subject: realSubject,
     text: message,
   };
   if (Array.isArray(attachments) && attachments.length) mail.attachments = attachments;

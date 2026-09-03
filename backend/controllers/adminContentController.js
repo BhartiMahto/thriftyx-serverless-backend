@@ -434,6 +434,10 @@ const listBookings = async (req, res) => {
           city: a.city ?? null,
           maritalStatus: a.maritalStatus ?? null,
           reasonToJoin: a.reasonToJoin ?? null,
+          // Answers to the event's custom checkout questions (label denormalised).
+          answers: Array.isArray(a.answers)
+            ? a.answers.map((x) => ({ key: x.key ?? null, label: x.label ?? null, value: x.value ?? null }))
+            : [],
         })),
         event: o.event_id
           ? {

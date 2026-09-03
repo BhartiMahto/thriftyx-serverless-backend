@@ -46,6 +46,9 @@ const normalizeTickets = (raw) => {
       price: Number(x.price) || 0,
       quantity: Number(x.quantity ?? x.capacity) || 0,
       description: String(x.description ?? "").trim(),
+      // Show/hide on the customer site (default shown). Preserved on save so a
+      // hidden ticket keeps its bookings instead of being deleted + recreated.
+      active: x.active === false ? false : true,
     }))
     .filter((x) => x.name);
 };
@@ -68,6 +71,21 @@ const normalizeLocationWhen = (l) => {
   };
 };
 
+/**
+ * The event's top-level date/time, DERIVED from the earliest city (date/time is
+ * entered per-city now). Keeps the list card, the public upcoming filter, and
+ * legacy top-level reads working without a separate top-level input.
+ */
+const deriveTopWhen = (locations) => {
+  const dated = (locations || [])
+    .filter((l) => l && l.date)
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const first = dated[0];
+  return first
+    ? { date: first.date, start_time: first.start_time || "", end_time: first.end_time || "" }
+    : { date: undefined, start_time: undefined, end_time: undefined };
+};
+
 /** Normalise a schedule/agenda array (from JSON or multipart string). */
 const normalizeSchedule = (raw) => {
   let s = raw;
@@ -79,6 +97,34 @@ const normalizeSchedule = (raw) => {
       activity: String(x.activity ?? "").trim(),
     }))
     .filter((x) => x.time || x.activity);
+};
+
+const CHECKOUT_QUESTION_TYPES = ["text", "paragraph", "select", "boolean", "multiselect"];
+/**
+ * Normalise the per-event custom checkout questions (from JSON or multipart
+ * string). Drops questions with no label; keeps a stable `key` (falls back to a
+ * slug of the label + index so answers stay addressable); only keeps `options`
+ * for the choice types.
+ */
+const normalizeCheckoutQuestions = (raw) => {
+  let q = raw;
+  if (typeof q === "string") { try { q = JSON.parse(q); } catch { q = []; } }
+  if (!Array.isArray(q)) return [];
+  return q
+    .map((x, i) => {
+      const label = String(x?.label ?? "").trim();
+      const type = CHECKOUT_QUESTION_TYPES.includes(x?.type) ? x.type : "text";
+      const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+      const key = String(x?.key ?? "").trim() || `${slug || "q"}-${i}`;
+      const options = (type === "select" || type === "multiselect") && Array.isArray(x?.options)
+        ? x.options.map((o) => String(o ?? "").trim()).filter(Boolean)
+        : [];
+      return { key, label, type, options, required: Boolean(x?.required) };
+    })
+    // Drop questions with no label, and choice questions (select/multiselect) with
+    // no options — a choice with no choices is meaningless and, if required, would
+    // make checkout impossible (empty dropdown that can never be answered).
+    .filter((x) => x.label && !((x.type === "select" || x.type === "multiselect") && x.options.length === 0));
 };
 
 const ageFromDob = (dob) => {
@@ -384,18 +430,22 @@ const createEvent = async (req, res) => {
     const result = await uploadToCloudinary(file.buffer);
     const cardResult = cardFile ? await uploadToCloudinary(cardFile.buffer) : null;
 
+    // Top-level date/time is DERIVED from the earliest city (date/time is
+    // per-city now). Falls back to any explicit top-level date sent by an API
+    // caller / legacy flow.
+    const topWhen = deriveTopWhen(parsedLocations);
     const newEvent = new Event({
       name,
       type,
       city: primary ? primary.city : city,
       venue: primary ? primary.venue : venue,
-      date,
+      date: topWhen.date || date,
       tickets: parsedTickets,
       min_age,
       max_age,
       venue_name: primary ? primary.venue : venue_name,
-      start_time,
-      end_time,
+      start_time: topWhen.date ? topWhen.start_time : start_time,
+      end_time: topWhen.date ? topWhen.end_time : end_time,
       locations: parsedLocations,
       // NOTE: the schema field is misspelled "cordinates".
       cordinates: parsedCoordinates,
@@ -406,6 +456,7 @@ const createEvent = async (req, res) => {
       // "interest" = Coming soon (collect interest, not bookable); "open" = normal.
       stage: stage === "interest" ? "interest" : "open",
       schedule: normalizeSchedule(req.body.schedule),
+      checkoutQuestions: normalizeCheckoutQuestions(req.body.checkoutQuestions),
       image: result.secure_url,
       cardImage: cardResult ? cardResult.secure_url : null,
       createdBy: new Date(),
@@ -460,7 +511,12 @@ const updateEvent = async (req, res) => {
     if (newImage) updates.image = (await uploadBuf(newImage.buffer)).secure_url;
     if (newCardImage) updates.cardImage = (await uploadBuf(newCardImage.buffer)).secure_url;
 
-    if (Object.keys(updates).length === 0 && req.body.locations === undefined) {
+    if (
+      Object.keys(updates).length === 0 &&
+      req.body.locations === undefined &&
+      req.body.schedule === undefined &&
+      req.body.checkoutQuestions === undefined
+    ) {
       return res.status(400).json({ message: "No editable fields provided", statusCode: 400 });
     }
 
@@ -479,6 +535,11 @@ const updateEvent = async (req, res) => {
     // Schedule / agenda (structured array; JSON string in multipart).
     if (req.body.schedule !== undefined) {
       updates.schedule = normalizeSchedule(req.body.schedule);
+    }
+
+    // Per-event custom checkout questions (structured array; JSON string in multipart).
+    if (req.body.checkoutQuestions !== undefined) {
+      updates.checkoutQuestions = normalizeCheckoutQuestions(req.body.checkoutQuestions);
     }
 
     // Stage: an admin may turn a normal event into a "Coming soon" (interest)
@@ -510,6 +571,16 @@ const updateEvent = async (req, res) => {
         updates.city = locs[0].city;
         updates.venue = locs[0].venue;
         updates.venue_name = locs[0].venue;
+      }
+      // Keep the top-level date/time in sync with the earliest city (derived).
+      // This is NOT treated as an admin "schedule change" for notifications —
+      // that is driven by the client explicitly sending date/time (rare now) or
+      // by per-city changes (whenChangedCities below).
+      const topWhen = deriveTopWhen(locs);
+      if (topWhen.date) {
+        updates.date = topWhen.date;
+        updates.start_time = topWhen.start_time;
+        updates.end_time = topWhen.end_time;
       }
     }
 
@@ -543,11 +614,15 @@ const updateEvent = async (req, res) => {
     // schedule change goes to everyone. Only real changes trigger a mail.
     let attendeesNotified = 0;
     const nrm = (s) => String(s || "").trim().toLowerCase();
+    // Notify-everyone "schedule change" is driven by the client EXPLICITLY
+    // sending a top-level date/time (rare — the edit form sets dates per-city).
+    // A merely-derived top-level change (from a per-city edit) must NOT notify
+    // everyone; that city's own bookers are handled by whenChangedCities below.
     const dateChanged =
-      updates.date !== undefined && prev && +new Date(prev.date || 0) !== +new Date(event.date || 0);
+      req.body.date !== undefined && prev && +new Date(prev.date || 0) !== +new Date(event.date || 0);
     const timeChanged =
-      (updates.start_time !== undefined && (prev?.start_time || "") !== (event.start_time || "")) ||
-      (updates.end_time !== undefined && (prev?.end_time || "") !== (event.end_time || ""));
+      (req.body.start_time !== undefined && (prev?.start_time || "") !== (event.start_time || "")) ||
+      (req.body.end_time !== undefined && (prev?.end_time || "") !== (event.end_time || ""));
     const scheduleChanged = dateChanged || timeChanged;
 
     // Cities whose venue or address changed (compared per city).
