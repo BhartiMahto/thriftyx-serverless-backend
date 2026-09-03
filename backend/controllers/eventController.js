@@ -711,15 +711,29 @@ const deleteEvent = async (req, res) => {
  */
 const rescheduleEvent = async (req, res) => {
   try {
-    const { date, start_time, end_time } = req.body;
+    // `city` optional: given → reschedule ONLY that city (its own date/time),
+    // notifying just that city's bookers; omitted → move the whole event.
+    const { date, start_time, end_time, city } = req.body;
     if (!date) return res.status(400).json({ message: "date is required", statusCode: 400 });
 
     const event = await Event.findById(req.params.id);
     if (!event) return res.status(404).json({ message: "Event not found", statusCode: 404 });
 
-    event.date = new Date(date);
-    if (start_time !== undefined) event.start_time = start_time;
-    if (end_time !== undefined) event.end_time = end_time;
+    const nrm = (s) => String(s || "").trim().toLowerCase();
+    let scopeCity = null;
+    if (city) {
+      const loc = (event.locations || []).find((l) => nrm(l.city) === nrm(city));
+      if (!loc) return res.status(404).json({ message: `That city isn't on this event: ${city}`, statusCode: 404 });
+      loc.date = new Date(date);
+      if (start_time !== undefined) loc.start_time = start_time;
+      if (end_time !== undefined) loc.end_time = end_time;
+      scopeCity = loc.city;
+      event.markModified("locations");
+    } else {
+      event.date = new Date(date);
+      if (start_time !== undefined) event.start_time = start_time;
+      if (end_time !== undefined) event.end_time = end_time;
+    }
     await event.save();
 
     // The date/time changed → refresh cached ticket PDFs so they show the new
@@ -727,30 +741,34 @@ const rescheduleEvent = async (req, res) => {
     try { await invalidateEventTickets(event._id); }
     catch (e) { console.error("invalidateEventTickets (reschedule) failed:", e.message); }
 
-    // Bookings reference the event, so they move with it. Notify every member.
-    const orders = await Order.find({ event_id: event._id, status: "completed" })
+    // Whole-event reschedule → notify everyone; per-city → only that city's
+    // bookers, each with THEIR city's new date/time (email + WhatsApp).
+    const allOrders = await Order.find({ event_id: event._id, status: "completed" })
       .populate("user_id", "email phone name");
+    const orders = scopeCity ? allOrders.filter((o) => nrm(o.event_city) === nrm(scopeCity)) : allOrders;
     const affectedBookings = orders.length;
 
-    const when = niceDate(event.date) + (event.start_time ? ` at ${event.start_time}` : "");
-    const body =
-      `Hi! "${event.name || "Your event"}" has been rescheduled to ${when}` +
-      `${event.city ? ` in ${event.city}` : ""}. Your booking is still valid — no action needed. ` +
-      `Questions? ${SUPPORT}\n— IRL Social Hive`;
-    // Fire notifications in parallel, best-effort.
-    await Promise.allSettled(orders.map((o) =>
-      notifyOrder(o, { subject: `Event rescheduled — ${event.name || "IRL Social Hive"}`, body })
-    ));
+    const results = await Promise.allSettled(orders.map((o) => {
+      const w = whenForCity(event, o.event_city);
+      const when = niceDate(w.date) + (w.start_time ? ` at ${w.start_time}` : "");
+      const cityLabel = scopeCity || o.event_city || event.city || "";
+      const body =
+        `Hi! "${event.name || "Your event"}"${cityLabel ? ` — ${cityLabel}` : ""} has been rescheduled to ${when}. ` +
+        `Your booking is still valid — no action needed. Download your updated ticket from your profile. ` +
+        `Questions? ${SUPPORT}\n— IRL Social Hive`;
+      const phone = o.attendee_details?.phone || o.user_id?.phone;
+      const whoName = firstName(o.attendee_details?.name || o.user_id?.name);
+      const waTask = sendWaTemplate(phone, "TWILIO_WA_EVENT_UPDATED_SID", {
+        1: whoName, 2: event.name || "your event", 3: `New date & time: ${when}`,
+      });
+      const emailTask = notifyOrder(o, { subject: `Event rescheduled — ${event.name || "IRL Social Hive"}`, body });
+      return Promise.all([emailTask, waTask]);
+    }));
+    const notified = results.filter((r) => r.status === "fulfilled").length;
 
     return res.status(200).json({
-      message: "Event rescheduled",
-      data: {
-        _id: event._id,
-        date: event.date,
-        start_time: event.start_time,
-        end_time: event.end_time,
-        affectedBookings,
-      },
+      message: scopeCity ? `Rescheduled ${scopeCity}` : "Event rescheduled",
+      data: { _id: event._id, city: scopeCity, date, start_time, end_time, affectedBookings, notified },
       statusCode: 200,
     });
   } catch (err) {
