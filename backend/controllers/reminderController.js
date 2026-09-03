@@ -2,6 +2,7 @@ const Event = require("../models/EventModel");
 const Order = require("../models/orderModel");
 const sendMail = require("../utils/sendMail");
 const { niceDate, SUPPORT, sendWaTemplate, firstName } = require("../utils/notify");
+const { whenForCity } = require("../utils/tickets");
 
 /**
  * Scheduled pre-event reminders (24h + 3h + 1h before start), sent on WhatsApp +
@@ -13,16 +14,19 @@ const { niceDate, SUPPORT, sendWaTemplate, firstName } = require("../utils/notif
 const IST_OFFSET_MS = 5.5 * 3600 * 1000;
 
 /**
- * The event's actual start instant, from `date` (calendar day) + `start_time`
- * ("HH:MM", IST). Robust to `date` being stored at IST-midnight or UTC-midnight —
- * it takes the IST calendar day either way. Falls back to IST-midnight if no time.
+ * The event's actual start instant for a given booking city, from that city's
+ * effective `date` (calendar day) + `start_time` ("HH:MM", IST) — a city may
+ * override the event's top-level date/time (e.g. one city postponed), else it
+ * inherits the top-level. Robust to `date` being stored at IST- or UTC-midnight.
+ * Falls back to IST-midnight if no time. Omitting `city` uses the top-level.
  */
-const eventStart = (ev) => {
-  if (!ev?.date) return null;
-  const ist = new Date(new Date(ev.date).getTime() + IST_OFFSET_MS);
+const eventStart = (ev, city) => {
+  const { date, start_time } = whenForCity(ev, city);
+  if (!date) return null;
+  const ist = new Date(new Date(date).getTime() + IST_OFFSET_MS);
   const y = ist.getUTCFullYear(), m = ist.getUTCMonth(), d = ist.getUTCDate();
   let hh = 0, mm = 0;
-  const t = String(ev.start_time || "").match(/^(\d{1,2}):(\d{2})/);
+  const t = String(start_time || "").match(/^(\d{1,2}):(\d{2})/);
   if (t) { hh = Number(t[1]); mm = Number(t[2]); }
   return new Date(Date.UTC(y, m, d, hh, mm) - IST_OFFSET_MS);
 };
@@ -48,50 +52,58 @@ async function sendDueReminders() {
   const from = new Date(now - 18 * 3600 * 1000);
   const to = new Date(now + 30 * 3600 * 1000);
 
-  const events = await Event.find({ date: { $gte: from, $lte: to } })
+  // Any event whose top-level date OR any city's overridden date is in the window.
+  const events = await Event.find({
+    $or: [
+      { date: { $gte: from, $lte: to } },
+      { "locations.date": { $gte: from, $lte: to } },
+    ],
+  })
     .select("name date start_time end_time venue_name venue city locations")
     .lean();
+
+  const bandFor = (h) =>
+    (h > 3 && h <= 24) ? "h24" : (h > 1 && h <= 3) ? "h3" : (h > 0 && h <= 1) ? "h1" : null;
 
   let sent24 = 0, sent3 = 0, sent1 = 0, failed = 0, processed = 0;
 
   for (const ev of events) {
-    const start = eventStart(ev);
-    if (!start) continue;
-    const hoursToStart = (start.getTime() - now) / 3600000;
-    // Which reminder (if any) is due for this event right now? Three
-    // non-overlapping bands: ~24h, ~3h, and a ~1h "starting soon" late nudge.
-    let kind = null;
-    if (hoursToStart > 3 && hoursToStart <= 24) kind = "h24";
-    else if (hoursToStart > 1 && hoursToStart <= 3) kind = "h3";
-    else if (hoursToStart > 0 && hoursToStart <= 1) kind = "h1";
-    if (!kind) continue;
-
+    // Fetch all still-valid bookings for this event; the due reminder band is
+    // computed PER booking from ITS city's date/time (cities can differ, e.g.
+    // one city postponed). Idempotency is checked per band below.
     const orders = await Order.find({
       event_id: ev._id,
       status: "completed",
       applicationStatus: "confirmed",
       cancelledAt: null,
       "refund.id": null,
-      [`reminders.${kind}`]: null, // not yet reminded for this window
     }).populate("user_id", "email phone name");
 
     for (const o of orders) {
+      const start = eventStart(ev, o.event_city);
+      if (!start) continue;
+      const hoursToStart = (start.getTime() - now) / 3600000;
+      const kind = bandFor(hoursToStart);
+      if (!kind) continue;
+      if (o.reminders && o.reminders[kind]) continue; // already reminded for this window
+
       if (processed >= MAX_PER_RUN) {
         console.warn(`reminders: hit per-run cap (${MAX_PER_RUN}); rest next run`);
-        return { sent24, sent3, failed, capped: true };
+        return { sent24, sent3, sent1, failed, capped: true };
       }
       processed++;
 
       const who = firstName(o.attendee_details?.name || o.user_id?.name);
       const phone = o.attendee_details?.phone || o.user_id?.phone;
       const email = o.attendee_details?.email || o.user_id?.email;
-      const time = ev.start_time || "";
+      const cityWhen = whenForCity(ev, o.event_city);
+      const time = cityWhen.start_time || "";
       const where = venueFor(ev, o.event_city || ev.city || "");
       // Single-line timing phrase (WhatsApp variables can't contain newlines).
       let whenPhrase;
       if (kind === "h1") whenPhrase = `today${time ? ` at ${time}` : ""} — starting in about an hour`;
       else if (kind === "h3") whenPhrase = `today${time ? ` at ${time}` : ""} — starting soon`;
-      else whenPhrase = `${niceDate(ev.date)}${time ? ` at ${time}` : ""}`;
+      else whenPhrase = `${niceDate(cityWhen.date)}${time ? ` at ${time}` : ""}`;
 
       try {
         await sendWaTemplate(phone, "TWILIO_WA_EVENT_REMINDER_SID", {

@@ -9,6 +9,7 @@ const streamifier = require("streamifier");
 const { refundOrderPayment } = require("./paymentController");
 const { refundCredit } = require("./membershipController");
 const { notifyOrder, notifyUser, niceDate, SUPPORT, sendWaTemplate, firstName } = require("../utils/notify");
+const { whenForCity } = require("../utils/tickets");
 const s3 = require("../utils/s3");
 
 /**
@@ -47,6 +48,24 @@ const normalizeTickets = (raw) => {
       description: String(x.description ?? "").trim(),
     }))
     .filter((x) => x.name);
+};
+
+/**
+ * Optional per-city schedule override on a location row. Blank fields mean the
+ * city inherits the event's top-level date/start_time/end_time, so we store null
+ * for a missing/invalid date and "" for missing times.
+ */
+const normalizeLocationWhen = (l) => {
+  let date = null;
+  if (l && l.date) {
+    const d = new Date(l.date);
+    if (!Number.isNaN(d.getTime())) date = d;
+  }
+  return {
+    date,
+    start_time: String(l?.start_time ?? "").trim(),
+    end_time: String(l?.end_time ?? "").trim(),
+  };
 };
 
 /** Normalise a schedule/agenda array (from JSON or multipart string). */
@@ -155,11 +174,15 @@ const getEvents = async (req, res) => {
     // / undated) so the payload stays tiny. A 1-day buffer avoids a timezone edge
     // hiding a same-day event; the client still applies the precise upcoming filter.
     const isAdmin = (req.baseUrl || "").includes("admin");
+    const upcomingSince = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const listQuery = isAdmin
       ? {}
       : {
           $or: [
-            { date: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
+            { date: { $gte: upcomingSince } },
+            // A city may be postponed independently — keep the event listed while
+            // ANY city's date is still upcoming, even if the top-level date passed.
+            { "locations.date": { $gte: upcomingSince } },
             { date: null },
             { stage: "interest" },
           ],
@@ -323,6 +346,7 @@ const createEvent = async (req, res) => {
             address: (l.address || "").trim(),
             lat: String(l.lat ?? l.latitude ?? ""),
             lng: String(l.lng ?? l.longitude ?? ""),
+            ...normalizeLocationWhen(l),
             tickets: normalizeTickets(l.tickets),
           }))
           .filter((l) => l.city || l.venue)
@@ -477,6 +501,7 @@ const updateEvent = async (req, res) => {
             address: (l.address || "").trim(),
             lat: String(l.lat ?? l.latitude ?? ""),
             lng: String(l.lng ?? l.longitude ?? ""),
+            ...normalizeLocationWhen(l),
             tickets: normalizeTickets(l.tickets),
           })).filter((l) => l.city || l.venue)
         : [];
@@ -528,40 +553,56 @@ const updateEvent = async (req, res) => {
     // Cities whose venue or address changed (compared per city).
     const prevLocByCity = new Map((prev?.locations || []).map((l) => [nrm(l.city), l]));
     const venueChangedCities = new Set();
+    // Cities whose OWN date/time was changed (per-city postpone / time change).
+    const whenChangedCities = new Set();
     for (const l of event.locations || []) {
       const p = prevLocByCity.get(nrm(l.city));
-      if (p && (nrm(p.venue) !== nrm(l.venue) || nrm(p.address) !== nrm(l.address))) {
+      if (!p) continue;
+      if (nrm(p.venue) !== nrm(l.venue) || nrm(p.address) !== nrm(l.address)) {
         venueChangedCities.add(nrm(l.city));
       }
+      const cityDateChanged = +new Date(p.date || 0) !== +new Date(l.date || 0);
+      const cityTimeChanged = (p.start_time || "") !== (l.start_time || "") || (p.end_time || "") !== (l.end_time || "");
+      if (cityDateChanged || cityTimeChanged) whenChangedCities.add(nrm(l.city));
     }
     // Flat venue change (single-city events without a locations[] array).
     const flatVenueChanged =
       (updates.venue !== undefined || updates.venue_name !== undefined) &&
       (nrm(prev?.venue) !== nrm(event.venue) || nrm(prev?.venue_name) !== nrm(event.venue_name));
 
-    if (scheduleChanged || venueChangedCities.size || flatVenueChanged) {
+    if (scheduleChanged || venueChangedCities.size || flatVenueChanged || whenChangedCities.size) {
       try {
         const orders = await Order.find({ event_id: event._id, status: "completed" })
           .populate("user_id", "email phone name");
-        const when = niceDate(event.date) + (event.start_time ? ` at ${event.start_time}` : "");
         const venueFor = (city) => {
           const loc = (event.locations || []).find((l) => nrm(l.city) === nrm(city));
           return loc
             ? [loc.venue, loc.address].filter(Boolean).join(", ")
             : [event.venue_name || event.venue, event.city].filter(Boolean).join(", ");
         };
+        // The booker's EFFECTIVE date/time (their city's override, else top-level).
+        const whenFor = (city) => {
+          const w = whenForCity(event, city);
+          return niceDate(w.date) + (w.start_time ? ` at ${w.start_time}` : "");
+        };
 
-        // A booker is affected by a venue change only if it's THEIR city.
+        // A booker is affected by a venue/time change only if it's THEIR city; a
+        // top-level schedule change affects everyone.
         const affected = orders.filter((o) => {
-          const venueForThem = flatVenueChanged || venueChangedCities.has(nrm(o.event_city || event.city || ""));
-          return scheduleChanged || venueForThem;
+          const ck = nrm(o.event_city || event.city || "");
+          const venueForThem = flatVenueChanged || venueChangedCities.has(ck);
+          const whenForThem = scheduleChanged || whenChangedCities.has(ck);
+          return whenForThem || venueForThem;
         });
 
         const results = await Promise.allSettled(affected.map((o) => {
           const cityRaw = o.event_city || event.city || "";
-          const venueForThem = flatVenueChanged || venueChangedCities.has(nrm(cityRaw));
+          const ck = nrm(cityRaw);
+          const venueForThem = flatVenueChanged || venueChangedCities.has(ck);
+          const whenForThem = scheduleChanged || whenChangedCities.has(ck);
+          const when = whenFor(cityRaw);
           const lines = [`Hi! There's an update to "${event.name || "your event"}"${cityRaw ? ` — ${cityRaw}` : ""}:`, ""];
-          if (scheduleChanged) lines.push(`🗓 New date & time: ${when}`);
+          if (whenForThem) lines.push(`🗓 New date & time: ${when}`);
           if (venueForThem) lines.push(`📍 New venue: ${venueFor(cityRaw)}`);
           lines.push(
             "",
@@ -573,7 +614,7 @@ const updateEvent = async (req, res) => {
           // WhatsApp (approved Utility template): {{3}} = a SINGLE-LINE summary
           // (WhatsApp variables can't contain newlines).
           const parts = [];
-          if (scheduleChanged) parts.push(`New date & time: ${when}`);
+          if (whenForThem) parts.push(`New date & time: ${when}`);
           if (venueForThem) parts.push(`New venue: ${venueFor(cityRaw)}`);
           const phone = o.attendee_details?.phone || o.user_id?.phone;
           const whoName = firstName(o.attendee_details?.name || o.user_id?.name);

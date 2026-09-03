@@ -62,6 +62,10 @@ async function ensureTicket(order) {
   const coords = event.cordinates || {};
   let lat = coords.lat || "";
   let lng = coords.lng || "";
+  // Effective schedule for this booking's city (a city may override the event's
+  // top-level date/time, e.g. one city postponed); falls back to the top-level.
+  let eventDate = event.date;
+  let startTime = event.start_time;
   const locs = Array.isArray(event.locations) ? event.locations : [];
   let loc = null;
   if (order.event_city && locs.length) {
@@ -76,6 +80,8 @@ async function ensureTicket(order) {
     address = loc.address || address;
     lat = loc.lat || lat;
     lng = loc.lng || lng;
+    if (loc.date) eventDate = loc.date;
+    if (loc.start_time) startTime = loc.start_time;
   }
 
   // One ticket page per attendee. Fall back to the single booker for older
@@ -83,7 +89,7 @@ async function ensureTicket(order) {
   const people = attendeesOf(order);
   const attendees = people.map((p, i) => ({
     name: p.name || null,
-    qrToken: signTicket(order, event.date, i),
+    qrToken: signTicket(order, eventDate, i),
     status: p.checkedIn ? "checked_in" : "confirmed",
   }));
 
@@ -91,8 +97,8 @@ async function ensureTicket(order) {
     attendees,
     event: {
       name: event.name,
-      date: event.date,
-      startTime: event.start_time,
+      date: eventDate,
+      startTime: startTime,
       venue: venueName,
       city: cityName,
       address,

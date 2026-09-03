@@ -41,6 +41,13 @@ const Event = new Schema({
             address: { type: String, default: "" },
             lat: { type: String, default: "" },
             lng: { type: String, default: "" },
+            // Optional per-city schedule override. When set, THIS city's booking
+            // runs on its own date/time (e.g. one city postponed, or a different
+            // start time); when blank it inherits the top-level date/start_time/
+            // end_time. Keeps single-city + legacy events unchanged.
+            date: { type: Date, default: null },
+            start_time: { type: String, default: "" },
+            end_time: { type: String, default: "" },
             // Per-city tickets — each city has its OWN inventory + prices, so
             // selling out in one city never affects another. Falls back to the
             // top-level `tickets` array when a city has none (legacy events).

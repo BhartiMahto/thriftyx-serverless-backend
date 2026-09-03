@@ -2,7 +2,7 @@ const Order = require("../models/orderModel");
 const Cart = require("../models/cartModel");
 const Event = require("../models/EventModel");
 const User = require("../models/userModel");
-const { ticketsForCity, findTicket, orderCityVenue } = require("../utils/tickets");
+const { ticketsForCity, findTicket, orderCityVenue, whenForCity } = require("../utils/tickets");
 const Coupon = require("../models/couponModel");
 const { evaluateCoupon } = require("./couponController");
 const {
@@ -449,8 +449,10 @@ const rateOrder = async (req, res) => {
       return res.status(400).json({ message: "Only paid bookings can be rated", statusCode: 400 });
     }
 
-    // The event must be over. An event with no date can't be confirmed as past.
-    const eventDate = order.event_id?.date ? new Date(order.event_id.date).getTime() : null;
+    // The event must be over. Use the booking city's effective date (a city may
+    // have its own date). An event with no date can't be confirmed as past.
+    const cityDate = whenForCity(order.event_id, order.event_city).date;
+    const eventDate = cityDate ? new Date(cityDate).getTime() : null;
     if (!eventDate || eventDate > Date.now()) {
       return res
         .status(400)
@@ -522,8 +524,11 @@ const cancelOrder = async (req, res) => {
 
     let evDate = null;
     try {
-      await order.populate("event_id", "date");
-      evDate = order.event_id?.date ? new Date(order.event_id.date) : null;
+      // Include locations so the booking city's own date is used (a city may be
+      // postponed independently — its refund window must follow its own date).
+      await order.populate("event_id", "date start_time locations");
+      const cityDate = whenForCity(order.event_id, order.event_city).date;
+      evDate = cityDate ? new Date(cityDate) : null;
     } catch { /* no event date → treat as fully refundable */ }
     const hoursToEvent = evDate ? (evDate.getTime() - Date.now()) / 3600000 : Infinity;
     const refundPercent = refundPercentForHours(hoursToEvent);
@@ -620,6 +625,8 @@ const getOrderTicket = async (req, res) => {
 
     const event = order.event_id || {};
     const details = order.attendee_details || {};
+    // Effective date/time for the booking's city (a city may have its own).
+    const when = whenForCity(event, order.event_city);
 
     // Lazily generate the PDFs if they're eligible but not yet built (covers
     // orders paid/confirmed before this feature existed). Non-fatal.
@@ -652,9 +659,9 @@ const getOrderTicket = async (req, res) => {
         })),
         event: {
           name: event.name || null,
-          date: event.date || null,
-          startTime: event.start_time || null,
-          endTime: event.end_time || null,
+          date: when.date || null,
+          startTime: when.start_time || null,
+          endTime: when.end_time || null,
           // The city/venue this booking is FOR (multi-city events store it on
           // the order), not the event's primary city.
           venue: orderCityVenue(order).venue,

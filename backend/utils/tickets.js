@@ -44,4 +44,20 @@ function orderCityVenue(order) {
   return { city, venue };
 }
 
-module.exports = { ticketsForCity, findTicket, locationForCity, orderCityVenue };
+/**
+ * The effective date + times for a booking city. A city may override the event's
+ * top-level date/start_time/end_time (e.g. one city postponed or its time
+ * changed); falls back to the top-level whenever the city sets none. Keeps
+ * single-city + legacy events working (they only carry the top-level date).
+ */
+function whenForCity(event, city) {
+  const loc = locationForCity(event, city);
+  const set = (v) => v !== undefined && v !== null && v !== "";
+  return {
+    date: set(loc?.date) ? loc.date : (event?.date ?? null),
+    start_time: set(loc?.start_time) ? loc.start_time : (event?.start_time || ""),
+    end_time: set(loc?.end_time) ? loc.end_time : (event?.end_time || ""),
+  };
+}
+
+module.exports = { ticketsForCity, findTicket, locationForCity, orderCityVenue, whenForCity };
