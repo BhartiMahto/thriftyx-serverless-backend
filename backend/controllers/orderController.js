@@ -502,7 +502,11 @@ const getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({ user_id: req.user._id })
       .populate("event_id", "name type city venue venue_name date image start_time locations")
-      .sort({ createdBy: -1 });
+      .sort({ createdBy: -1 })
+      .lean();
+
+    // Never expose the raw gateway refund error to the customer — it's admin-only.
+    for (const o of orders) { if (o.refund) delete o.refund.error; }
 
     return res.status(200).json({ message: "Orders", data: orders, statusCode: 200 });
   } catch (error) {
@@ -671,6 +675,36 @@ const cancelOrder = async (req, res) => {
       );
     } catch (e) { console.error("cancel notify:", e.message); }
 
+    // Notify the team on every cancellation. The RAW gateway error (e.g. an
+    // insufficient-balance refund failure) goes ONLY here — never to the customer.
+    try {
+      const ADMIN_CANCEL_EMAIL = process.env.ADMIN_CANCEL_EMAIL || "admin@thriftyx.com";
+      const r = order.refund || {};
+      const evName = order.event_id?.name || "an event";
+      const who = order.attendee_details?.name || order.user_id?.name || "A customer";
+      const refundFailed = r.status === "failed" || (r.amount > 0 && !r.id);
+      const refundLine = !wasPaid
+        ? "This booking was not a paid (money) order."
+        : refundFailed
+          ? `⚠️ REFUND FAILED — ₹${r.amount ?? refundAmount} could NOT be auto-refunded. Add Razorpay balance and retry.\nGateway error: ${r.error || "unknown"}`
+          : r.id
+            ? `Refund of ₹${r.amount} initiated (ref ${r.rrn || r.id}), status: ${r.status}.`
+            : (refundPercent === 0 ? "No refund applies (event already started)." : `Refund note: ${refundNote || "—"}`);
+      await sendMail(
+        ADMIN_CANCEL_EMAIL,
+        `${refundFailed ? "⚠️ " : ""}Booking cancelled — ${evName}${refundFailed ? " (refund needs attention)" : ""}`,
+        `<p><b>${who}</b> cancelled a ticket.</p>
+         <ul>
+           <li>Event: ${evName}${order.event_city ? ` — ${order.event_city}` : ""}</li>
+           <li>Order: ${order.order_id || order._id}</li>
+           <li>Customer: ${order.attendee_details?.name || order.user_id?.name || "—"} · ${order.attendee_details?.email || order.user_id?.email || "—"} · ${order.attendee_details?.phone || order.user_id?.phone || "—"}</li>
+           <li>Amount paid: ₹${order.grand_total ?? 0}</li>
+           <li>Cancelled at: ${order.cancelledAt}</li>
+         </ul>
+         <p>${refundLine}</p>`
+      );
+    } catch (e) { console.error("cancel admin notify:", e.message); }
+
     return res.status(200).json({
       message: "Booking cancelled",
       data: {
@@ -678,7 +712,10 @@ const cancelOrder = async (req, res) => {
         status: order.status,
         cancelledAt: order.cancelledAt,
         refundPercent: eligibleForMoneyRefund ? refundPercent : 0,
-        refund: order.refund?.id || order.refund?.status ? order.refund : null,
+        // Raw gateway `error` is deliberately omitted — it's admin-only.
+        refund: (order.refund?.id || order.refund?.status)
+          ? { id: order.refund.id, status: order.refund.status, amount: order.refund.amount, rrn: order.refund.rrn, at: order.refund.at }
+          : null,
         refundNote,
       },
       statusCode: 200,

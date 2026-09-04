@@ -122,6 +122,15 @@ const Order = new Schema({
         type: String,
         unique: false,
     },
+    // The gateway (Razorpay) order id created in createPayment. Persisted so
+    // verifyPayment can bind the callback to THIS order — a valid signature for
+    // some *other* order on the same merchant account must not mark this order
+    // paid. Null for pass-covered / ₹0 bookings that skip the gateway.
+    paymentOrderId: {
+        type: String,
+        unique: false,
+        default: null,
+    },
     payment_id: {
         type: String,
         unique: false,

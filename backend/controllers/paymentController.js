@@ -134,6 +134,10 @@ const createPayment = async (req, res) => {
     }
 
     order.status = "pending";
+    // Persist the gateway order id so verifyPayment can bind the callback to
+    // THIS order (see the check in verifyPayment). Stored in mock mode too, for
+    // consistency — the mock verify branch doesn't rely on it.
+    order.paymentOrderId = paymentOrderId;
     order.updatedBy = new Date();
     await order.save();
 
@@ -175,6 +179,12 @@ const verifyPayment = async (req, res) => {
     if (order.status === "completed") {
       return res.status(409).json({ message: "Order is already paid", statusCode: 409 });
     }
+    // Only a live checkout can be verified: `pending` (createPayment ran) or a
+    // freshly created `in_progress` order. A cancelled / refunded / previously
+    // failed order must never be flipped to paid by a replayed signature.
+    if (order.status !== "pending" && order.status !== "in_progress") {
+      return res.status(409).json({ message: "This booking can no longer be paid", statusCode: 409 });
+    }
 
     let paymentId;
 
@@ -187,6 +197,15 @@ const verifyPayment = async (req, res) => {
         return res
           .status(400)
           .json({ message: "Missing Razorpay verification fields", statusCode: 400 });
+      }
+
+      // Bind the callback to THIS order's own gateway order. The HMAC below only
+      // proves the {order,payment,signature} triple is a genuine Razorpay
+      // callback for SOME order on the merchant account — not that it's for this
+      // order. Without this, a valid triple from any other (e.g. a cheap ₹1)
+      // payment could be replayed here to mark an expensive order paid.
+      if (!order.paymentOrderId || razorpay_order_id !== order.paymentOrderId) {
+        return res.status(400).json({ message: "Payment verification failed", statusCode: 400 });
       }
 
       const expected = crypto
