@@ -459,6 +459,7 @@ const createEvent = async (req, res) => {
       checkoutQuestions: normalizeCheckoutQuestions(req.body.checkoutQuestions),
       image: result.secure_url,
       cardImage: cardResult ? cardResult.secure_url : null,
+      videoUrl: (req.body.videoUrl || "").trim() || null,
       createdBy: new Date(),
     });
 
@@ -474,7 +475,7 @@ const createEvent = async (req, res) => {
 /** Fields an admin may change on an event. */
 const EDITABLE_EVENT_FIELDS = [
   "name", "type", "city", "venue", "venue_name", "date", "start_time", "end_time",
-  "tickets", "description", "shortDescription", "instruction", "min_age", "max_age", "cordinates", "image",
+  "tickets", "description", "shortDescription", "instruction", "min_age", "max_age", "cordinates", "image", "videoUrl",
 ];
 
 const EVENT_STATUSES = ["Published", "Unpublished", "Cancelled"];

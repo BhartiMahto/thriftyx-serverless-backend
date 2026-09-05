@@ -79,6 +79,12 @@ const Event = new Schema({
         type: String,
         default: null,
     },
+    // Optional explainer video — a YouTube/Vimeo link (only the URL is stored;
+    // the video is hosted + streamed by YouTube/Vimeo, so no server cost).
+    videoUrl: {
+        type: String,
+        default: null,
+    },
     date: {
         type: Date,
         unique: false,
