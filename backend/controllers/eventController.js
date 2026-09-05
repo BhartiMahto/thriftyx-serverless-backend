@@ -99,7 +99,7 @@ const normalizeSchedule = (raw) => {
     .filter((x) => x.time || x.activity);
 };
 
-const CHECKOUT_QUESTION_TYPES = ["text", "paragraph", "select", "boolean", "multiselect"];
+const CHECKOUT_QUESTION_TYPES = ["text", "paragraph", "select", "boolean", "multiselect", "video"];
 /**
  * Normalise the per-event custom checkout questions (from JSON or multipart
  * string). Drops questions with no label; keeps a stable `key` (falls back to a

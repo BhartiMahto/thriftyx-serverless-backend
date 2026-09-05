@@ -163,7 +163,7 @@ const Event = new Schema({
     checkoutQuestions: [{
         key: { type: String },                    // stable id within the event
         label: { type: String },                  // the question shown to the attendee
-        type: { type: String, default: "text" },  // text | paragraph | select | boolean | multiselect
+        type: { type: String, default: "text" },  // text | paragraph | select | boolean | multiselect | video
         options: [{ type: String }],              // choices for select / multiselect
         required: { type: Boolean, default: false },
     }],
