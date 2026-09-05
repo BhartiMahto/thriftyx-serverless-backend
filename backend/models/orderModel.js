@@ -106,6 +106,13 @@ const Order = new Schema({
         default: false,
         required: false
     },
+    // True when an admin manually added this booking (offline / walk-in / comp),
+    // as opposed to a customer booking online.
+    addedByAdmin: {
+        type: Boolean,
+        default: false,
+        required: false
+    },
     // invoice: {
     //     type: String,
     //     unique: false,

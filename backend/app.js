@@ -17,6 +17,7 @@ const couponRoutes = require("./routes/couponRoutes");
 const membershipRoutes = require("./routes/membershipRoutes");
 const ratingRoutes = require("./routes/ratingRoutes")
 const reviewRoutes = require("./routes/reviewRoutes");
+const tripRoutes = require("./routes/tripRoutes");
 
 // Browsers block cross-origin calls without this. The frontend and admin panel
 // run on their own Vite dev ports, so both must be allowed explicitly.
@@ -60,6 +61,7 @@ app.use("/api/rating", ratingRoutes)
 // Legacy misspelling kept so any already-deployed client keeps working.
 app.use("/api/ratring", ratingRoutes)
 app.use("/api/events", eventRoutes)
+app.use("/api/trips", tripRoutes)
 app.use("/api/story", storyRoutes)
 app.use("/api/reviews", reviewRoutes);
 

@@ -1068,6 +1068,73 @@ const getEventAttendees = async (req, res) => {
 };
 
 /**
+ * POST /api/admin/events/:eventId/attendees — admin manually adds a booking
+ * (e.g. an offline / walk-in / comp attendee). Creates a completed + confirmed
+ * order with no user account (details live on the order). Amount is what the
+ * admin actually collected (0 for a comp). Best-effort ticket generation.
+ */
+const adminAddAttendee = async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.eventId);
+    if (!event) return res.status(404).json({ message: "Event not found", statusCode: 404 });
+
+    const { name, email, phone, gender, age, DOB, city, ticketType, amount, maritalStatus } = req.body;
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ message: "Attendee name is required", statusCode: 400 });
+    }
+    const price = Math.max(0, Number(amount) || 0);
+    const attendee = {
+      name: String(name).trim().slice(0, 120),
+      email: email ? String(email).trim().slice(0, 200) : null,
+      phone: phone ? String(phone).trim().slice(0, 30) : null,
+      gender: gender ? String(gender) : null,
+      age: (age !== undefined && age !== null && age !== "") ? Number(age) : (DOB ? ageFromDob(DOB) : null),
+      DOB: DOB || null,
+      city: city ? String(city).trim() : null,
+      maritalStatus: maritalStatus ? String(maritalStatus) : null,
+      reasonToJoin: null,
+      answers: [],
+    };
+
+    const order = await Order.create({
+      user_id: null, // no customer account — an admin-added booking
+      event_id: event._id,
+      tickets: [{ name: ticketType ? String(ticketType) : "Manual", count: 1, price }],
+      total_price: price,
+      booking_fee: 0,
+      gst: 0,
+      discount: 0,
+      grand_total: price,
+      status: "completed",         // admin add = already paid/settled
+      applicationStatus: "confirmed", // and confirmed (they're in)
+      addedByAdmin: true,          // marker so it's distinguishable from online bookings
+      isTnC_accepted: true,
+      attendee_details: attendee,
+      attendees: [attendee],
+      event_city: city ? String(city).trim() : null,
+      order_id: `THX${Date.now()}${Math.floor(Math.random() * 1000)}`,
+      createdBy: new Date(),
+      updatedBy: new Date(),
+    });
+
+    // Best-effort: issue the ticket so it can be downloaded/sent. Never fail the add.
+    try {
+      const { ensureTicket } = require("../utils/documents");
+      await ensureTicket(order);
+    } catch (e) { console.error("adminAddAttendee ticket:", e.message); }
+
+    return res.status(201).json({
+      message: "Attendee added",
+      data: { _id: order._id, order_id: order.order_id },
+      statusCode: 201,
+    });
+  } catch (error) {
+    console.error("adminAddAttendee error:", error);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+/**
  * PATCH /api/admin/attendees/:orderId/check-in — flips one attendee's check-in
  * state. Body: { checkedIn?, attendeeIndex? }. The orderId may arrive as a
  * composite "orderId:index" (matching the attendee row id); an explicit
@@ -1660,5 +1727,6 @@ module.exports = {
   getInvoicePdf,
   verifyTicketScan,
   getEventAttendees,
+  adminAddAttendee,
   toggleCheckIn,
 };

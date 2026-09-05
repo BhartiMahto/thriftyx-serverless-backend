@@ -132,6 +132,16 @@ router.get(
   orderController.getEventAttendees
 );
 
+// Admin manually adds a booking/attendee (offline / walk-in / comp).
+router.post(
+  "/events/:eventId/attendees",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  orderController.adminAddAttendee
+);
+
 router.patch(
   "/attendees/:orderId/check-in",
   async (req, res, next) => {
