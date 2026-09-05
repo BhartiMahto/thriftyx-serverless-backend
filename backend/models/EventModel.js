@@ -85,6 +85,12 @@ const Event = new Schema({
         type: String,
         default: null,
     },
+    // Admin on/off switch for the video — lets an admin hide the video without
+    // deleting the link. Defaults on, so setting a link shows it right away.
+    videoEnabled: {
+        type: Boolean,
+        default: true,
+    },
     date: {
         type: Date,
         unique: false,

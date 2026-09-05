@@ -460,6 +460,8 @@ const createEvent = async (req, res) => {
       image: result.secure_url,
       cardImage: cardResult ? cardResult.secure_url : null,
       videoUrl: (req.body.videoUrl || "").trim() || null,
+      // Multipart sends booleans as strings; default on when omitted.
+      videoEnabled: !(req.body.videoEnabled === "false" || req.body.videoEnabled === false),
       createdBy: new Date(),
     });
 
@@ -475,7 +477,7 @@ const createEvent = async (req, res) => {
 /** Fields an admin may change on an event. */
 const EDITABLE_EVENT_FIELDS = [
   "name", "type", "city", "venue", "venue_name", "date", "start_time", "end_time",
-  "tickets", "description", "shortDescription", "instruction", "min_age", "max_age", "cordinates", "image", "videoUrl",
+  "tickets", "description", "shortDescription", "instruction", "min_age", "max_age", "cordinates", "image", "videoUrl", "videoEnabled",
 ];
 
 const EVENT_STATUSES = ["Published", "Unpublished", "Cancelled"];
@@ -501,6 +503,14 @@ const updateEvent = async (req, res) => {
     }
     if (updates.min_age !== undefined) updates.min_age = Number(updates.min_age) || undefined;
     if (updates.max_age !== undefined) updates.max_age = Number(updates.max_age) || undefined;
+    // videoEnabled arrives as a string in multipart requests — coerce to boolean.
+    if (updates.videoEnabled !== undefined) {
+      updates.videoEnabled = !(updates.videoEnabled === "false" || updates.videoEnabled === false);
+    }
+    // Blank video link clears it (store null rather than an empty string).
+    if (updates.videoUrl !== undefined) {
+      updates.videoUrl = String(updates.videoUrl).trim() || null;
+    }
 
     // New poster(s) uploaded (via upload.fields) → push to Cloudinary + store URL.
     const uploadBuf = (buf) => new Promise((resolve, reject) => {
