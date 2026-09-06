@@ -113,6 +113,17 @@ const Order = new Schema({
         default: false,
         required: false
     },
+    // Set when this booking was created as part of a "set of events" purchase.
+    seriesId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Series",
+        default: null,
+    },
+    seriesOrderId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "SeriesOrder",
+        default: null,
+    },
     // invoice: {
     //     type: String,
     //     unique: false,
