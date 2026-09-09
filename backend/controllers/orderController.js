@@ -134,6 +134,9 @@ const toAttendeeRows = (order) => {
     city: orderCityVenue(order).city || order.user_id?.city || null,
     venue: orderCityVenue(order).venue || null,
     grandTotal: order.grand_total ?? 0,
+    // Manually added by an admin (comp / walk-in / test) — shown with a badge and
+    // safely removable, unlike real paid bookings (which use cancel/refund).
+    addedByAdmin: Boolean(order.addedByAdmin),
   }));
 };
 
@@ -1078,7 +1081,7 @@ const adminAddAttendee = async (req, res) => {
     const event = await Event.findById(req.params.eventId);
     if (!event) return res.status(404).json({ message: "Event not found", statusCode: 404 });
 
-    const { name, email, phone, gender, age, DOB, city, ticketType, amount, maritalStatus } = req.body;
+    const { name, email, phone, gender, age, DOB, city, ticketType, amount, maritalStatus, reasonToJoin } = req.body;
     if (!name || !String(name).trim()) {
       return res.status(400).json({ message: "Attendee name is required", statusCode: 400 });
     }
@@ -1092,7 +1095,7 @@ const adminAddAttendee = async (req, res) => {
       DOB: DOB || null,
       city: city ? String(city).trim() : null,
       maritalStatus: maritalStatus ? String(maritalStatus) : null,
-      reasonToJoin: null,
+      reasonToJoin: reasonToJoin ? String(reasonToJoin).trim().slice(0, 1000) : null,
       answers: [],
     };
 
@@ -1130,6 +1133,32 @@ const adminAddAttendee = async (req, res) => {
     });
   } catch (error) {
     console.error("adminAddAttendee error:", error);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+/**
+ * DELETE /api/admin/attendees/:orderId — permanently remove a MANUALLY-added
+ * attendee (addedByAdmin: comp / walk-in / test). Real paid bookings cannot be
+ * deleted here — use cancel/refund — so a genuine customer record can never be
+ * silently destroyed. The row id may arrive as a composite "orderId:index";
+ * only the order id matters (admin-added attendees are single-attendee orders).
+ */
+const deleteEventAttendee = async (req, res) => {
+  try {
+    const [orderId] = String(req.params.orderId).split(":");
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ message: "Booking not found", statusCode: 404 });
+    if (!order.addedByAdmin) {
+      return res.status(403).json({
+        message: "Only manually-added attendees can be removed here. Use cancel/refund for a real booking.",
+        statusCode: 403,
+      });
+    }
+    await Order.deleteOne({ _id: order._id });
+    return res.status(200).json({ message: "Attendee removed", statusCode: 200 });
+  } catch (error) {
+    console.error("deleteEventAttendee error:", error);
     return res.status(500).json({ message: "Server Error", statusCode: 500 });
   }
 };
@@ -1728,5 +1757,6 @@ module.exports = {
   verifyTicketScan,
   getEventAttendees,
   adminAddAttendee,
+  deleteEventAttendee,
   toggleCheckIn,
 };

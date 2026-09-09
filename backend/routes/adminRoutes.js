@@ -151,6 +151,16 @@ router.patch(
   orderController.toggleCheckIn
 );
 
+// Remove a manually-added (addedByAdmin) attendee. Rejects real paid bookings.
+router.delete(
+  "/attendees/:orderId",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  orderController.deleteEventAttendee
+);
+
 // Confirm or reject a waitlisted application (reject auto-refunds if paid).
 router.patch(
   "/bookings/:id/decision",
