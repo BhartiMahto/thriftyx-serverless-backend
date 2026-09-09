@@ -34,7 +34,9 @@ const dateMatch = (from, to) => ({ createdBy: { $gte: from, $lte: to } });
 // its status stayed "completed" — e.g. an external/gateway refund. (Our own
 // admin refunds also flip status to "cancelled", so they're excluded regardless.)
 const NOT_REFUNDED = { "refund.id": null };
-const paidMatch = (from, to) => ({ ...dateMatch(from, to), status: PAID, ...NOT_REFUNDED });
+// Manually admin-added attendees (comp/test) never count as paid revenue.
+const NOT_MANUAL = { addedByAdmin: { $ne: true } };
+const paidMatch = (from, to) => ({ ...dateMatch(from, to), status: PAID, ...NOT_REFUNDED, ...NOT_MANUAL });
 
 /** GET /api/admin/analytics/summary */
 const getSummary = async (req, res) => {

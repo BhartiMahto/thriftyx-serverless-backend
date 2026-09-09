@@ -262,8 +262,10 @@ const getEvents = async (req, res) => {
         { $group: {
             _id: "$event_id",
             registered: { $sum: attendeeCount },
-            paid: { $sum: { $cond: [{ $eq: ["$status", "completed"] }, attendeeCount, 0] } },
-            revenue: { $sum: { $cond: [{ $eq: ["$status", "completed"] }, { $ifNull: ["$grand_total", 0] }, 0] } },
+            // Manually admin-added attendees (comp/test) are NOT counted as paid
+            // or as revenue — only towards `registered`.
+            paid: { $sum: { $cond: [{ $and: [{ $eq: ["$status", "completed"] }, { $ne: ["$addedByAdmin", true] }] }, attendeeCount, 0] } },
+            revenue: { $sum: { $cond: [{ $and: [{ $eq: ["$status", "completed"] }, { $ne: ["$addedByAdmin", true] }] }, { $ifNull: ["$grand_total", 0] }, 0] } },
         } },
       ]),
       Order.aggregate([

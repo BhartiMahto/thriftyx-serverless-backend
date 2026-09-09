@@ -29,7 +29,8 @@ const isoDay = (d) => (d ? new Date(d).toISOString().slice(0, 10) : "");
  */
 const guestList = async (req, res) => {
   try {
-    const match = { status: PAID, ...NOT_REFUNDED, ...dateRange(req.query) };
+    // Manually admin-added (comp/test) attendees are excluded from paid exports.
+    const match = { status: PAID, ...NOT_REFUNDED, addedByAdmin: { $ne: true }, ...dateRange(req.query) };
     if (req.query.event_id) match.event_id = req.query.event_id;
     if (req.query.city) match.event_city = new RegExp(`^${String(req.query.city).trim()}$`, "i");
 
@@ -79,7 +80,8 @@ const guestList = async (req, res) => {
  */
 const salesByCity = async (req, res) => {
   try {
-    const match = { status: PAID, ...NOT_REFUNDED, ...dateRange(req.query) };
+    // Manually admin-added (comp/test) attendees are excluded from paid exports.
+    const match = { status: PAID, ...NOT_REFUNDED, addedByAdmin: { $ne: true }, ...dateRange(req.query) };
 
     const agg = await Order.aggregate([
       { $match: match },

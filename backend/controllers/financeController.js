@@ -170,7 +170,7 @@ const financeSummary = async (req, res) => {
 
     // 1) Website booking revenue (paid, not refunded) — by month.
     const webAgg = await Order.aggregate([
-      { $match: { status: PAID, ...NOT_REFUNDED, createdBy: { $gte: from, $lte: to } } },
+      { $match: { status: PAID, ...NOT_REFUNDED, addedByAdmin: { $ne: true }, createdBy: { $gte: from, $lte: to } } },
       { $group: { _id: { $dateToString: { format: "%Y-%m", date: "$createdBy" } }, revenue: { $sum: { $ifNull: ["$grand_total", 0] } } } },
     ]);
     const websiteTotal = round2(webAgg.reduce((s, r) => s + r.revenue, 0));
