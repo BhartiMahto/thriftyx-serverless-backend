@@ -1164,6 +1164,50 @@ const deleteEventAttendee = async (req, res) => {
 };
 
 /**
+ * Scheduled cleanup: permanently delete manually admin-added attendees
+ * (addedByAdmin) the day AFTER their event has passed. An order's effective date
+ * is its per-city occurrence date (whenForCity), falling back to the event's
+ * top-level date. "Day after" = the occurrence date is before the start of today
+ * (IST) — so on the event day itself nothing is removed, and from the next day on
+ * the manual entries are gone. Orphaned manual orders (event deleted) are also
+ * cleaned. Idempotent — safe to run repeatedly. Never touches real bookings.
+ */
+const cleanupExpiredManualAttendees = async () => {
+  try {
+    const { whenForCity } = require("../utils/tickets");
+    // Start of today in IST, as a UTC instant.
+    const IST_MS = 5.5 * 60 * 60 * 1000;
+    const istNow = new Date(Date.now() + IST_MS);
+    const istMidnightUtc = Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate());
+    const startOfTodayUtc = new Date(istMidnightUtc - IST_MS);
+
+    const manual = await Order.find({ addedByAdmin: true })
+      .populate("event_id", "date start_time end_time locations")
+      .lean();
+
+    const toDelete = [];
+    for (const o of manual) {
+      const ev = o.event_id;
+      if (!ev) { toDelete.push(o._id); continue; } // event gone → orphan, clean it
+      const when = whenForCity(ev, o.event_city);
+      const raw = when?.date ?? ev.date ?? null;
+      const d = raw ? new Date(raw) : null;
+      if (d && !Number.isNaN(d.getTime()) && d < startOfTodayUtc) toDelete.push(o._id);
+    }
+
+    if (toDelete.length) {
+      // Re-assert addedByAdmin in the delete filter — defence-in-depth so a real
+      // booking can never be removed by this job.
+      await Order.deleteMany({ _id: { $in: toDelete }, addedByAdmin: true });
+    }
+    return { checked: manual.length, deleted: toDelete.length };
+  } catch (e) {
+    console.error("cleanupExpiredManualAttendees error:", e.message);
+    return { checked: 0, deleted: 0, error: e.message };
+  }
+};
+
+/**
  * PATCH /api/admin/attendees/:orderId/check-in — flips one attendee's check-in
  * state. Body: { checkedIn?, attendeeIndex? }. The orderId may arrive as a
  * composite "orderId:index" (matching the attendee row id); an explicit
@@ -1758,5 +1802,6 @@ module.exports = {
   getEventAttendees,
   adminAddAttendee,
   deleteEventAttendee,
+  cleanupExpiredManualAttendees,
   toggleCheckIn,
 };
