@@ -19,6 +19,7 @@ const ratingRoutes = require("./routes/ratingRoutes")
 const reviewRoutes = require("./routes/reviewRoutes");
 const tripRoutes = require("./routes/tripRoutes");
 const uploadRoutes = require("./routes/uploadRoutes");
+const eventApplicationRoutes = require("./routes/eventApplicationRoutes");
 const seriesRoutes = require("./routes/seriesRoutes");
 
 // Browsers block cross-origin calls without this. The frontend and admin panel
@@ -65,6 +66,7 @@ app.use("/api/ratring", ratingRoutes)
 app.use("/api/events", eventRoutes)
 app.use("/api/trips", tripRoutes)
 app.use("/api/uploads", uploadRoutes)
+app.use("/api/event-apply", eventApplicationRoutes)
 app.use("/api/series", seriesRoutes)
 app.use("/api/story", storyRoutes)
 app.use("/api/reviews", reviewRoutes);

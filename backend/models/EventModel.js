@@ -190,6 +190,13 @@ const Event = new Schema({
         default: "open",
         required: false,
     },
+    // Invite-only: the event is hidden from the public listing and is NOT
+    // directly bookable. People apply via a shareable form link (/apply/:id);
+    // an admin approves, then the applicant pays the chosen ticket price.
+    inviteOnly: {
+        type: Boolean,
+        default: false,
+    },
     // Guard so interested users are notified exactly once, when the event is
     // first opened for booking (interest -> open).
     notifiedInterested: {

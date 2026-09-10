@@ -224,6 +224,9 @@ const getEvents = async (req, res) => {
     const listQuery = isAdmin
       ? {}
       : {
+          // Invite-only events are hidden from the public list — they're reached
+          // only via their shared apply-form link.
+          inviteOnly: { $ne: true },
           $or: [
             { date: { $gte: upcomingSince } },
             // A city may be postponed independently — keep the event listed while
@@ -464,6 +467,8 @@ const createEvent = async (req, res) => {
       videoUrl: (req.body.videoUrl || "").trim() || null,
       // Multipart sends booleans as strings; default on when omitted.
       videoEnabled: !(req.body.videoEnabled === "false" || req.body.videoEnabled === false),
+      // Invite-only (application + approval flow). Default OFF.
+      inviteOnly: req.body.inviteOnly === "true" || req.body.inviteOnly === true,
       createdBy: new Date(),
     });
 
@@ -479,7 +484,7 @@ const createEvent = async (req, res) => {
 /** Fields an admin may change on an event. */
 const EDITABLE_EVENT_FIELDS = [
   "name", "type", "city", "venue", "venue_name", "date", "start_time", "end_time",
-  "tickets", "description", "shortDescription", "instruction", "min_age", "max_age", "cordinates", "image", "videoUrl", "videoEnabled",
+  "tickets", "description", "shortDescription", "instruction", "min_age", "max_age", "cordinates", "image", "videoUrl", "videoEnabled", "inviteOnly",
 ];
 
 const EVENT_STATUSES = ["Published", "Unpublished", "Cancelled"];
@@ -508,6 +513,9 @@ const updateEvent = async (req, res) => {
     // videoEnabled arrives as a string in multipart requests — coerce to boolean.
     if (updates.videoEnabled !== undefined) {
       updates.videoEnabled = !(updates.videoEnabled === "false" || updates.videoEnabled === false);
+    }
+    if (updates.inviteOnly !== undefined) {
+      updates.inviteOnly = updates.inviteOnly === "true" || updates.inviteOnly === true;
     }
     // Blank video link clears it (store null rather than an empty string).
     if (updates.videoUrl !== undefined) {

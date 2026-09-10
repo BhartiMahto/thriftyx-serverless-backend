@@ -73,7 +73,9 @@ const getSummary = async (req, res) => {
     const paid = { count: paidAgg?.count || 0, revenue: paidAgg?.revenue || 0 };
 
     const [uniqueCustomers] = await Order.aggregate([
-      { $match: paidMatch(from, to) },
+      // Exclude accountless orders (e.g. invite-only application bookings, which
+      // carry user_id: null) so they don't collapse into one phantom "customer".
+      { $match: { ...paidMatch(from, to), user_id: { $ne: null } } },
       { $group: { _id: "$user_id" } },
       { $count: "n" },
     ]);

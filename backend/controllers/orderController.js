@@ -259,6 +259,15 @@ const createOrder = async (req, res) => {
       });
     }
 
+    // Invite-only events are not directly bookable — they go through the
+    // application + approval flow (/apply/:id). Block the direct checkout path.
+    if (event.inviteOnly) {
+      return res.status(400).json({
+        message: "This event is invite-only. Please apply through the form.",
+        statusCode: 400,
+      });
+    }
+
     // Age gate — every attendee's age must fall within the event's allowed range:
     // no older, no younger. Defence-in-depth; the checkout UI already enforces
     // this, but a direct API call must not bypass it, so the age is RE-DERIVED
@@ -1464,6 +1473,11 @@ const rescheduleOrder = async (req, res) => {
 
     const target = await Event.findById(eventId);
     if (!target) return res.status(404).json({ message: "That event was not found", statusCode: 404 });
+    // Invite-only events can only be joined via the application + approval flow —
+    // never by rescheduling an existing booking onto them (mirrors createOrder).
+    if (target.inviteOnly) {
+      return res.status(400).json({ message: "That event is invite-only — please apply through its form.", statusCode: 400 });
+    }
     const tDate = target.date ? new Date(target.date) : null;
     if (tDate && tDate.getTime() <= Date.now()) {
       return res.status(400).json({ message: "That date has already passed", statusCode: 400 });
