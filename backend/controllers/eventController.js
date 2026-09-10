@@ -224,9 +224,8 @@ const getEvents = async (req, res) => {
     const listQuery = isAdmin
       ? {}
       : {
-          // Invite-only events are hidden from the public list — they're reached
-          // only via their shared apply-form link.
-          inviteOnly: { $ne: true },
+          // Invite-only events DO appear in the public list (with an "Apply"
+          // CTA) — they're just not directly bookable.
           $or: [
             { date: { $gte: upcomingSince } },
             // A city may be postponed independently — keep the event listed while
