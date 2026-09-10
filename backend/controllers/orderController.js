@@ -268,6 +268,11 @@ const createOrder = async (req, res) => {
       });
     }
 
+    // Admin-forced sold out — no more bookings.
+    if (event.soldOut) {
+      return res.status(400).json({ message: "This event is sold out.", statusCode: 400 });
+    }
+
     // Age gate — every attendee's age must fall within the event's allowed range:
     // no older, no younger. Defence-in-depth; the checkout UI already enforces
     // this, but a direct API call must not bypass it, so the age is RE-DERIVED

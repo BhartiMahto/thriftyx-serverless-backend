@@ -197,6 +197,12 @@ const Event = new Schema({
         type: Boolean,
         default: false,
     },
+    // Admin-forced "Sold out": shows a Sold-out badge on the card + detail and
+    // blocks booking, regardless of remaining ticket inventory.
+    soldOut: {
+        type: Boolean,
+        default: false,
+    },
     // Guard so interested users are notified exactly once, when the event is
     // first opened for booking (interest -> open).
     notifiedInterested: {

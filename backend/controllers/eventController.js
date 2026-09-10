@@ -468,6 +468,7 @@ const createEvent = async (req, res) => {
       videoEnabled: !(req.body.videoEnabled === "false" || req.body.videoEnabled === false),
       // Invite-only (application + approval flow). Default OFF.
       inviteOnly: req.body.inviteOnly === "true" || req.body.inviteOnly === true,
+      soldOut: req.body.soldOut === "true" || req.body.soldOut === true,
       createdBy: new Date(),
     });
 
@@ -483,7 +484,7 @@ const createEvent = async (req, res) => {
 /** Fields an admin may change on an event. */
 const EDITABLE_EVENT_FIELDS = [
   "name", "type", "city", "venue", "venue_name", "date", "start_time", "end_time",
-  "tickets", "description", "shortDescription", "instruction", "min_age", "max_age", "cordinates", "image", "videoUrl", "videoEnabled", "inviteOnly",
+  "tickets", "description", "shortDescription", "instruction", "min_age", "max_age", "cordinates", "image", "videoUrl", "videoEnabled", "inviteOnly", "soldOut",
 ];
 
 const EVENT_STATUSES = ["Published", "Unpublished", "Cancelled"];
@@ -515,6 +516,9 @@ const updateEvent = async (req, res) => {
     }
     if (updates.inviteOnly !== undefined) {
       updates.inviteOnly = updates.inviteOnly === "true" || updates.inviteOnly === true;
+    }
+    if (updates.soldOut !== undefined) {
+      updates.soldOut = updates.soldOut === "true" || updates.soldOut === true;
     }
     // Blank video link clears it (store null rather than an empty string).
     if (updates.videoUrl !== undefined) {
