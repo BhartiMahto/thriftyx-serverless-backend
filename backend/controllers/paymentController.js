@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const Order = require("../models/orderModel");
 const sendMail = require("../utils/sendMail");
 const { niceDate, SUPPORT, sendWaTemplate, firstName } = require("../utils/notify");
+const { whenForCity, orderCityVenue } = require("../utils/tickets");
 
 /**
  * Emails the customer that their payment landed and their spot is pending host
@@ -12,7 +13,7 @@ const notifyWaitlisted = async (order) => {
   try {
     if (order.applicationStatus === "confirmed") return;
     await order.populate("user_id", "email phone name");
-    await order.populate("event_id", "name date start_time end_time venue_name venue city");
+    await order.populate("event_id", "name date start_time end_time venue_name venue city locations");
     const to = order.attendee_details?.email || order.user_id?.email;
     const phone = order.attendee_details?.phone || order.user_id?.phone;
     const who = firstName(order.attendee_details?.name || order.user_id?.name);
@@ -23,9 +24,13 @@ const notifyWaitlisted = async (order) => {
     await sendWaTemplate(phone, "TWILIO_WA_BOOKING_PENDING_SID", { 1: who, 2: name });
 
     if (!to) return;
-    const when = ev.date ? niceDate(ev.date) : "";
-    const time = [ev.start_time, ev.end_time].filter(Boolean).join(" - ");
-    const where = [ev.venue_name || ev.venue, order.event_city || ev.city].filter(Boolean).join(", ");
+    // Multi-city events: show the date/time/venue for THIS booking's city, not
+    // the event's primary (top-level) city. Falls back to top-level per helper.
+    const cityWhen = whenForCity(ev, order.event_city);
+    const cv = orderCityVenue(order);
+    const when = cityWhen.date ? niceDate(cityWhen.date) : "";
+    const time = [cityWhen.start_time, cityWhen.end_time].filter(Boolean).join(" - ");
+    const where = [cv.venue, cv.city].filter(Boolean).join(", ");
     const body = [
       `Thanks for booking "${name}" — your payment has been received. 🎟`,
       "",
