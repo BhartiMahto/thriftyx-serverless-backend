@@ -1827,4 +1827,5 @@ module.exports = {
   deleteEventAttendee,
   cleanupExpiredManualAttendees,
   toggleCheckIn,
+  notifyBookingConfirmed,
 };

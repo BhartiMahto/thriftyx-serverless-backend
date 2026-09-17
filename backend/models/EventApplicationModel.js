@@ -40,6 +40,10 @@ const eventApplicationSchema = new Schema({
     default: "pending",
   },
   adminNote: { type: String, default: null },
+  // Created by an admin for someone who reached out directly (not a public form
+  // submission). The resulting paid Order is still a real, revenue-counting
+  // booking — this flag only tags the application row for the admin list.
+  addedByAdmin: { type: Boolean, default: false },
 
   // Login-free payment.
   payToken: { type: String, default: null, index: true },

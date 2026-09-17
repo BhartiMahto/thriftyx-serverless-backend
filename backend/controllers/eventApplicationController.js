@@ -3,6 +3,7 @@ const Event = require("../models/EventModel");
 const EventApplication = require("../models/EventApplicationModel");
 const Order = require("../models/orderModel");
 const sendMail = require("../utils/sendMail");
+const { sendWaTemplate, firstName, niceDate } = require("../utils/notify");
 const { createGatewayOrder, verifyGatewaySignature, MOCK_PAYMENTS, RZP_KEY_ID } = require("./paymentController");
 const { findTicket, ticketsForCity, whenForCity } = require("../utils/tickets");
 
@@ -11,6 +12,40 @@ const ADMIN_NOTIFY = process.env.APPLICATIONS_NOTIFY_EMAIL || process.env.SELLER
 
 const num = (v, d = 0) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
 const cap = (v, n) => (v ? String(v).trim().slice(0, n) : null);
+const round2 = (n) => Math.round(n * 100) / 100;
+const inr = (n) => `₹${Number(n || 0).toLocaleString("en-IN")}`;
+
+// Invite-only pricing: what an approved applicant actually pays. GST (18%) applies
+// to everyone; the platform fee (5%) applies ONLY to male guests (business rule
+// for invite-only / admin-added bookings — regular website checkout is separate).
+const GST_RATE = 0.18;
+const PLATFORM_FEE_RATE = 0.05;
+const applicationCharge = (app) => {
+  const base = round2(num(app.amount));
+  const isMale = String(app.gender || "").trim().toLowerCase() === "male";
+  const fee = isMale ? round2(base * PLATFORM_FEE_RATE) : 0;
+  const gst = round2(base * GST_RATE);
+  const total = round2(base + gst + fee);
+  return { base, gst, fee, total, isMale };
+};
+
+/**
+ * Builds the pieces shown in the approval message (WhatsApp + email): a
+ * single-line price breakup, the total, the booking city, and its date/time.
+ * `ev` must carry date/start_time/end_time/locations for whenForCity.
+ */
+const approvalParts = (app, ev) => {
+  const charge = applicationCharge(app);
+  const breakup = charge.fee > 0
+    ? `Ticket ${inr(charge.base)} + GST ${inr(charge.gst)} + Platform fee ${inr(charge.fee)}`
+    : `Ticket ${inr(charge.base)} + GST ${inr(charge.gst)}`;
+  const when = whenForCity(ev, app.city);
+  const dateStr = when.date ? niceDate(when.date) : "";
+  const timeStr = [when.start_time, when.end_time].filter(Boolean).join("–");
+  const whenLine = [dateStr, timeStr].filter(Boolean).join(" · ") || "See your ticket";
+  const cityStr = app.city || ev.city || "—";
+  return { ...charge, breakup, whenLine, cityStr };
+};
 
 const ageFromDob = (dob) => {
   if (!dob) return null;
@@ -166,13 +201,21 @@ const getApplicationPayInfo = async (req, res) => {
     );
     if (!app) return res.status(404).json({ message: "Not found", statusCode: 404 });
     const when = app.event_id ? whenForCity(app.event_id, app.city) : { date: null, start_time: "", end_time: "" };
+    const charge = applicationCharge(app);
     return res.status(200).json({
       message: "Application",
       data: {
         _id: app._id,
         name: app.name,
         status: app.status,
-        amount: app.amount,
+        // `amount` = the FULL payable (base + GST + male fee) so the pay page's
+        // "Amount to pay" / "Pay ₹X" matches what Razorpay actually charges.
+        amount: charge.total,
+        // Breakdown for a fuller display (ticket price, GST, platform fee).
+        ticketPrice: charge.base,
+        gst: charge.gst,
+        platformFee: charge.fee,
+        payable: charge.total,
         ticketName: app.ticketName,
         city: app.city,
         paidAt: app.paidAt,
@@ -194,12 +237,12 @@ const createOrderFromApplication = async (app, event, paymentId) => {
     maritalStatus: app.maritalStatus, reasonToJoin: app.reasonToJoin || null,
     answers: Array.isArray(app.answers) ? app.answers : [],
   };
-  const amount = num(app.amount);
+  const { base, gst, fee, total } = applicationCharge(app);
   const order = await Order.create({
     user_id: null,
     event_id: event._id,
-    tickets: [{ name: app.ticketName || "Invite", count: 1, price: amount }],
-    total_price: amount, booking_fee: 0, gst: 0, discount: 0, grand_total: amount,
+    tickets: [{ name: app.ticketName || "Invite", count: 1, price: base }],
+    total_price: base, booking_fee: fee, gst: gst, discount: 0, grand_total: total,
     status: "completed",
     applicationStatus: "confirmed",
     isTnC_accepted: true,
@@ -213,23 +256,28 @@ const createOrderFromApplication = async (app, event, paymentId) => {
     updatedBy: new Date(),
   });
   try {
-    const { ensureTicket } = require("../utils/documents");
-    await ensureTicket(order);
-  } catch (e) { console.error("application ticket:", e.message); }
+    const { ensureTicket, ensureInvoice } = require("../utils/documents");
+    await ensureInvoice(order);   // GST tax invoice (attached to the email)
+    await ensureTicket(order);    // ticket PDF with entry QR
+  } catch (e) { console.error("application docs:", e.message); }
   return order;
 };
 
-const notifyApplicantConfirmed = (app, event) => {
-  if (!app.email) return;
-  const when = whenForCity(event, app.city);
-  sendMail(
-    app.email,
-    `You're confirmed — ${event.name} 🎟`,
-    `<p>Hi ${app.name || "there"},</p>
-     <p>Your payment is received and your spot for <b>${event.name}</b> is confirmed!</p>
-     ${when.date ? `<p>Date: ${new Date(when.date).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}${when.start_time ? ` · ${when.start_time}` : ""}</p>` : ""}
-     <p>See you there,<br/>Team IRL Social Hive</p>`
-  ).catch((e) => console.error("application confirm notify failed:", e.message));
+/**
+ * Send the full booking confirmation once an application is paid: WhatsApp with
+ * the ticket PDF + email with the ticket & tax-invoice PDFs and the correct
+ * per-city venue/time. Reuses the same tested path as a normal paid booking.
+ * Lazy-require avoids any load-order cycle with orderController.
+ */
+const notifyConfirmed = (order) => {
+  try {
+    const { notifyBookingConfirmed } = require("./orderController");
+    return Promise.resolve(notifyBookingConfirmed(order)).catch((e) =>
+      console.error("application confirm notify failed:", e.message)
+    );
+  } catch (e) {
+    console.error("application confirm notify failed:", e.message);
+  }
 };
 
 /** POST /api/event-apply/pay/:token — start payment for an approved application. */
@@ -239,7 +287,8 @@ const payApplication = async (req, res) => {
     if (!app) return res.status(404).json({ message: "Not found", statusCode: 404 });
     if (app.status === "paid") return res.status(400).json({ message: "Already paid", statusCode: 400 });
     if (app.status !== "approved") return res.status(400).json({ message: "This application isn't ready for payment yet", statusCode: 400 });
-    const amount = num(app.amount);
+    // Charge the full payable: ticket price + 18% GST (+ 5% platform fee if male).
+    const amount = applicationCharge(app).total;
     if (amount <= 0) return res.status(400).json({ message: "No amount is set", statusCode: 400 });
 
     const gw = await createGatewayOrder(Math.round(amount * 100), `app_${String(app._id).slice(-10)}`);
@@ -250,7 +299,7 @@ const payApplication = async (req, res) => {
       const order = await createOrderFromApplication(app, app.event_id, `mock_pay_${crypto.randomBytes(6).toString("hex")}`);
       app.status = "paid"; app.paidAt = new Date(); app.order_id = order._id;
       await app.save();
-      notifyApplicantConfirmed(app, app.event_id);
+      notifyConfirmed(order);
       return res.status(200).json({ message: "Paid", data: { mock: true, status: "paid" }, statusCode: 200 });
     }
 
@@ -279,7 +328,7 @@ const verifyApplicationPayment = async (req, res) => {
         try {
           const order = await createOrderFromApplication(app, app.event_id, app.paymentId || null);
           app.order_id = order._id; await app.save();
-          notifyApplicantConfirmed(app, app.event_id);
+          notifyConfirmed(order);
         } catch (e) { console.error("verifyApplicationPayment self-heal:", e.message); }
       }
       return res.status(200).json({ message: "Already paid", data: { status: "paid" }, statusCode: 200 });
@@ -305,7 +354,7 @@ const verifyApplicationPayment = async (req, res) => {
     const order = await createOrderFromApplication(claimed, app.event_id, razorpay_payment_id);
     claimed.order_id = order._id;
     await claimed.save();
-    notifyApplicantConfirmed(claimed, app.event_id);
+    notifyConfirmed(order);
 
     return res.status(200).json({ message: "Payment confirmed", data: { status: "paid" }, statusCode: 200 });
   } catch (error) {
@@ -341,7 +390,7 @@ const listApplications = async (req, res) => {
  */
 const updateApplication = async (req, res) => {
   try {
-    const app = await EventApplication.findById(req.params.id).populate("event_id", "name");
+    const app = await EventApplication.findById(req.params.id).populate("event_id", "name date start_time end_time locations city");
     if (!app) return res.status(404).json({ message: "Not found", statusCode: 404 });
     const { status, adminNote } = req.body;
 
@@ -357,19 +406,32 @@ const updateApplication = async (req, res) => {
       app.status = status;
       if (status === "approved") {
         if (!app.payToken) app.payToken = crypto.randomBytes(24).toString("hex");
+        const link = `${CUSTOMER_BASE()}/apply-pay/${app.payToken}`;
+        const ev = app.event_id || {};
+        const { total, breakup, whenLine, cityStr } = approvalParts(app, ev);
         if (app.email) {
-          const link = `${CUSTOMER_BASE()}/apply-pay/${app.payToken}`;
-          const amt = num(app.amount);
           sendMail(
             app.email,
-            `You're in — ${app.event_id?.name || "your event"} 🎉`,
+            `You're in — ${ev.name || "your event"} 🎉`,
             `<p>Hi ${app.name || "there"},</p>
-             <p>Great news — your application for <b>${app.event_id?.name || "the event"}</b> has been approved!</p>
-             ${amt > 0 ? `<p>To confirm your spot, please pay <b>₹${amt.toLocaleString("en-IN")}</b>:</p>` : "<p>Please complete your booking:</p>"}
-             <p><a href="${link}">${link}</a></p>
+             <p>Great news — your application for <b>${ev.name || "the event"}</b> has been approved!</p>
+             <p>📍 ${cityStr}<br/>🗓 ${whenLine}</p>
+             ${total > 0 ? `<p><b>Payment breakdown</b><br/>${breakup}<br/>Total to pay: <b>${inr(total)}</b></p>` : ""}
+             <p>Confirm your spot: <a href="${link}">${link}</a></p>
              <p>See you there,<br/>Team IRL Social Hive</p>`
           ).catch((e) => console.error("application approve notify failed:", e.message));
         }
+        // WhatsApp (approved Utility template) — pay link + breakup + city/time.
+        // {{7}} is the payToken only; the template's URL button prepends the base.
+        sendWaTemplate(app.phone, "TWILIO_WA_APPLICATION_APPROVED_SID", {
+          1: firstName(app.name),
+          2: ev.name || "your event",
+          3: cityStr,
+          4: whenLine,
+          5: breakup,
+          6: inr(total),
+          7: app.payToken,
+        }).catch((e) => console.error("application approve WA failed:", e.message));
       }
     }
 
@@ -386,6 +448,86 @@ const updateApplication = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/event-apply/admin/create — admin adds an application for someone who
+ * reached out directly (e.g. an Instagram DM). Created already APPROVED with a
+ * login-free pay link, so the admin can send the WhatsApp/email pay link and the
+ * guest lands in the guest list once they pay. Works for any published event
+ * (not just invite-only). Amount = the chosen ticket's price (server-resolved).
+ */
+const adminCreateApplication = async (req, res) => {
+  try {
+    const { event_id, name, email, phone, gender, DOB, city, maritalStatus, reasonToJoin, ticketName, answers } = req.body;
+    const ev = await Event.findById(event_id);
+    if (!ev) return res.status(404).json({ message: "Event not found", statusCode: 404 });
+    if (!name || !String(name).trim()) return res.status(400).json({ message: "Name is required", statusCode: 400 });
+    if (!phone && !email) return res.status(400).json({ message: "A phone or email is required", statusCode: 400 });
+
+    // Resolve the chosen ticket → the price. If the event sells tickets, one must
+    // resolve (else the pay link would be a ₹0 dead-end).
+    const t = findTicket(ev, city, ticketName);
+    const hasTickets = (ev.tickets && ev.tickets.length) || (ev.locations || []).some((l) => l.tickets && l.tickets.length);
+    if (hasTickets && !t) {
+      return res.status(400).json({ message: "Please choose a valid city and ticket for this event.", statusCode: 400 });
+    }
+    const base = t ? (Number(t.price) || 0) : num(req.body.amount);
+    if (base <= 0) return res.status(400).json({ message: "No ticket price is set — pick a paid ticket.", statusCode: 400 });
+
+    const app = await EventApplication.create({
+      event_id: ev._id,
+      name: cap(name, 120),
+      email: cap(email, 200),
+      phone: cap(phone, 30),
+      gender: gender ? String(gender) : null,
+      DOB: DOB || null,
+      age: ageFromDob(DOB),
+      city: cap(city, 120),
+      maritalStatus: maritalStatus ? String(maritalStatus) : null,
+      reasonToJoin: cap(reasonToJoin, 1000),
+      answers: cleanAnswers(answers),
+      ticketName: cap(ticketName, 120),
+      amount: base,
+      status: "approved",
+      payToken: crypto.randomBytes(24).toString("hex"),
+      addedByAdmin: true,
+    });
+
+    const link = `${CUSTOMER_BASE()}/apply-pay/${app.payToken}`;
+    const { total, breakup, whenLine, cityStr } = approvalParts(app, ev);
+
+    if (app.email) {
+      sendMail(
+        app.email,
+        `You're in — ${ev.name || "your event"} 🎉`,
+        `<p>Hi ${app.name || "there"},</p>
+         <p>Your spot for <b>${ev.name || "the event"}</b> is reserved!</p>
+         <p>📍 ${cityStr}<br/>🗓 ${whenLine}</p>
+         <p><b>Payment breakdown</b><br/>${breakup}<br/>Total to pay: <b>${inr(total)}</b></p>
+         <p>Confirm your spot: <a href="${link}">${link}</a></p>
+         <p>See you there,<br/>Team IRL Social Hive</p>`
+      ).catch((e) => console.error("admin-application email failed:", e.message));
+    }
+    sendWaTemplate(app.phone, "TWILIO_WA_APPLICATION_APPROVED_SID", {
+      1: firstName(app.name),
+      2: ev.name || "your event",
+      3: cityStr,
+      4: whenLine,
+      5: breakup,
+      6: inr(total),
+      7: app.payToken,
+    }).catch((e) => console.error("admin-application WA failed:", e.message));
+
+    return res.status(201).json({
+      message: "Application created",
+      data: { _id: app._id, status: app.status, payToken: app.payToken, payLink: link, amount: base, payable: total },
+      statusCode: 201,
+    });
+  } catch (error) {
+    console.error("adminCreateApplication error:", error);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
 module.exports = {
   getApplyInfo,
   submitApplication,
@@ -394,4 +536,5 @@ module.exports = {
   verifyApplicationPayment,
   listApplications,
   updateApplication,
+  adminCreateApplication,
 };

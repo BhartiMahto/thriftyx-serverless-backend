@@ -3,6 +3,7 @@ const Trip = require("../models/TripModel");
 const TripRegistration = require("../models/TripRegistrationModel");
 const cloudinary = require("../utils/cloudinary");
 const sendMail = require("../utils/sendMail");
+const { sendWaTemplate, firstName } = require("../utils/notify");
 const { createGatewayOrder, verifyGatewaySignature, MOCK_PAYMENTS, RZP_KEY_ID } = require("./paymentController");
 
 /* ------------------------------- helpers ------------------------------- */
@@ -21,6 +22,15 @@ const uploadBuf = (buf) => new Promise((resolve, reject) => {
 
 const num = (v, d = 0) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
 const str = (v) => (v === undefined || v === null ? null : String(v));
+const round2 = (n) => Math.round(n * 100) / 100;
+const inr = (n) => `₹${Number(n || 0).toLocaleString("en-IN")}`;
+
+// A trip guest pays the admin-set amount + 18% GST (no platform fee on trips).
+const tripCharge = (reg) => {
+  const base = round2(num(reg.amount));
+  const gst = round2(base * 0.18);
+  return { base, gst, total: round2(base + gst) };
+};
 
 const normalizeItinerary = (raw) => parseArr(raw)
   .map((x, i) => ({
@@ -180,13 +190,19 @@ const getRegistrationByToken = async (req, res) => {
       "name destination region route image start_date end_date"
     );
     if (!reg) return res.status(404).json({ message: "Not found", statusCode: 404 });
+    const charge = tripCharge(reg);
     return res.status(200).json({
       message: "Registration",
       data: {
         _id: reg._id,
         name: reg.name,
         status: reg.status,
-        amount: reg.amount,
+        // `amount` = full payable (base + 18% GST) so the pay page matches the charge.
+        amount: charge.total,
+        // Breakdown for a fuller display.
+        basePrice: charge.base,
+        gst: charge.gst,
+        payable: charge.total,
         paidAt: reg.paidAt,
         trip: reg.trip_id,
       },
@@ -205,7 +221,8 @@ const payRegistration = async (req, res) => {
     if (!reg) return res.status(404).json({ message: "Not found", statusCode: 404 });
     if (reg.status === "paid") return res.status(400).json({ message: "Already paid", statusCode: 400 });
     if (reg.status !== "accepted") return res.status(400).json({ message: "This request isn't ready for payment yet", statusCode: 400 });
-    const amount = num(reg.amount);
+    // Charge the admin-set amount + 18% GST.
+    const amount = tripCharge(reg).total;
     if (amount <= 0) return res.status(400).json({ message: "No amount is set for this request", statusCode: 400 });
 
     const gw = await createGatewayOrder(Math.round(amount * 100), `trip_${String(reg._id).slice(-10)}`);
@@ -381,20 +398,27 @@ const updateRegistration = async (req, res) => {
       reg.status = status;
       if (status === "accepted") {
         if (!reg.payToken) reg.payToken = crypto.randomBytes(24).toString("hex");
+        const link = `${CUSTOMER_BASE()}/trip-pay/${reg.payToken}`;
+        const { total } = tripCharge(reg);
         // Email the guest a login-free pay link (best-effort).
         if (reg.email) {
-          const link = `${CUSTOMER_BASE()}/trip-pay/${reg.payToken}`;
-          const amt = num(reg.amount);
           sendMail(
             reg.email,
             `You're in — ${reg.trip_id?.name || "your trip"} 🎉`,
             `<p>Hi ${reg.name || "there"},</p>
              <p>Great news — your request to join <b>${reg.trip_id?.name || "the trip"}</b> has been accepted!</p>
-             ${amt > 0 ? `<p>To reserve your spot, please pay <b>₹${amt.toLocaleString("en-IN")}</b>:</p>` : "<p>Please complete your booking:</p>"}
+             ${total > 0 ? `<p>To reserve your spot, please pay <b>${inr(total)}</b>:</p>` : "<p>Please complete your booking:</p>"}
              <p><a href="${link}">${link}</a></p>
              <p>See you there,<br/>Team IRL Social Hive</p>`
           ).catch((e) => console.error("trip accept notify failed:", e.message));
         }
+        // WhatsApp (approved Utility template) — pay link straight to their phone.
+        sendWaTemplate(reg.phone, "TWILIO_WA_TRIP_ACCEPTED_SID", {
+          1: firstName(reg.name),
+          2: reg.trip_id?.name || "your trip",
+          3: inr(total),
+          4: link,
+        }).catch((e) => console.error("trip accept WA failed:", e.message));
       }
     }
 

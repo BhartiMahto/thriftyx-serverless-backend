@@ -13,6 +13,7 @@ router.post("/pay/:token/verify", withDb, ctrl.verifyApplicationPayment);
 
 /* ---- Admin (before "/:id") ---- */
 router.get("/admin/list", withDb, protect, ctrl.listApplications);
+router.post("/admin/create", withDb, protect, ctrl.adminCreateApplication);
 router.patch("/admin/:id", withDb, protect, ctrl.updateApplication);
 
 /* ---- Public apply form + submit ---- */
