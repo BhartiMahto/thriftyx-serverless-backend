@@ -2,7 +2,7 @@ const Order = require("../models/orderModel");
 const Cart = require("../models/cartModel");
 const Event = require("../models/EventModel");
 const User = require("../models/userModel");
-const { ticketsForCity, findTicket, orderCityVenue, whenForCity } = require("../utils/tickets");
+const { ticketsForCity, findTicket, orderCityVenue, whenForCity, locationForCity } = require("../utils/tickets");
 const Coupon = require("../models/couponModel");
 const { evaluateCoupon } = require("./couponController");
 const {
@@ -50,6 +50,13 @@ const notifyBookingConfirmed = async (order) => {
     const when = cityWhen.date ? niceDate(cityWhen.date) : "";
     const time = [cityWhen.start_time, cityWhen.end_time].filter(Boolean).join(" - ");
     const where = [cv.venue, cv.city].filter(Boolean).join(", ");
+    // Address + a clickable Google Maps directions link for the email body — PDF
+    // link annotations aren't tappable in some viewers (e.g. WhatsApp preview),
+    // but a plain URL in the email is reliably clickable.
+    const loc = locationForCity(ev, order.event_city);
+    const addr = loc?.address || "";
+    const dest = (loc?.lat && loc?.lng) ? `${loc.lat},${loc.lng}` : [cv.venue, addr, cv.city].filter(Boolean).join(", ");
+    const mapsUrl = dest ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(dest)}` : "";
 
     // WhatsApp (approved Utility document template) — delivers the ticket PDF.
     // {{5}} is the ticket filename appended to the template's fixed S3 base URL.
@@ -80,6 +87,8 @@ const notifyBookingConfirmed = async (order) => {
       "",
       ...(when ? [`Date: ${when}${time ? ` (${time})` : ""}`] : []),
       ...(where ? [`Venue: ${where}`] : []),
+      ...(addr ? [addr] : []),
+      ...(mapsUrl ? [`Get directions: ${mapsUrl}`] : []),
       "",
       ticketLine,
       "",
