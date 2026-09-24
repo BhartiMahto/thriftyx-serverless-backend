@@ -130,16 +130,20 @@ function drawTicketPage(doc, t, attendee, png) {
     .text("IRL SOCIAL HIVE", brandX, 26, { characterSpacing: 1.5 });
   doc.fontSize(23).text(t.event?.name || "Event", 24, 52, { width: W - 48 });
   doc.font("Helvetica").fontSize(10).fillColor("#eef2ff")
-    .text("Hosted by ThriftyX", 24, doc.y + 2);
+    .text("Hosted by Social Hive", 24, doc.y + 2);
 
   // Body detail rows.
   let y = 172;
+  // Height-aware row: advances y by the value's ACTUAL wrapped height, so a long
+  // value (e.g. a full venue address) never clips or overlaps the next row.
   const row = (label, value) => {
+    const val = value || "—";
     doc.fillColor(MUTED).font("Helvetica").fontSize(8.5)
       .text(String(label).toUpperCase(), 24, y, { characterSpacing: 0.6 });
-    doc.fillColor(INK).font("Helvetica-Bold").fontSize(13)
-      .text(value || "—", 24, y + 11, { width: W - 48 });
-    y += 44;
+    doc.fillColor(INK).font("Helvetica-Bold").fontSize(13);
+    const h = doc.heightOfString(val, { width: W - 48 });
+    doc.text(val, 24, y + 12, { width: W - 48 });
+    y += 12 + h + 10;
   };
   const d = t.event?.date ? new Date(t.event.date) : null;
   const dateStr = d
@@ -147,10 +151,15 @@ function drawTicketPage(doc, t, attendee, png) {
     : "Date to be announced";
   const timeStr = t.event?.startTime ? ` · ${t.event.startTime}` : "";
   row("When", `${dateStr}${timeStr}`);
-  const whereText = [t.event?.venue, t.event?.address, t.event?.city]
-    .filter(Boolean).join(", ") || "Venue TBA";
+  // Venue + address + city, but skip city if the address already contains it
+  // (avoids "…, Bengaluru, India, Bengaluru").
+  const addrLc = String(t.event?.address || "").toLowerCase();
+  const whereParts = [t.event?.venue, t.event?.address];
+  if (t.event?.city && !addrLc.includes(String(t.event.city).toLowerCase())) whereParts.push(t.event.city);
+  const whereText = whereParts.filter(Boolean).join(", ") || "Venue TBA";
   row("Where", whereText);
-  // Tappable "Get directions" link — opens the device's Maps app with a route.
+  // Tappable "Get directions" link — rendered right below the (possibly
+  // multi-line) address so the clickable area lines up with the text.
   const mapsDest =
     t.event?.lat && t.event?.lng
       ? `${t.event.lat},${t.event.lng}`
@@ -158,8 +167,8 @@ function drawTicketPage(doc, t, attendee, png) {
   if (mapsDest) {
     const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(mapsDest)}`;
     doc.fillColor(BRAND.blue).font("Helvetica-Bold").fontSize(10)
-      .text("Get directions ›", 24, y - 8, { link: mapsUrl, underline: true });
-    y += 14;
+      .text("Get directions ›", 24, y - 6, { link: mapsUrl, underline: true });
+    y += 16;
   }
   // Ticket line shows "General · Guest 2 of 3" for multi-attendee bookings.
   const seat = attendee.total > 1 ? ` · Guest ${attendee.seat} of ${attendee.total}` : "";
@@ -183,7 +192,7 @@ function drawTicketPage(doc, t, attendee, png) {
   y += 22;
   const status = attendee.status || t.status;
   const confirmed = status === "confirmed";
-  const pillText = confirmed ? "● CONFIRMED" : status === "checked_in" ? "● CHECKED IN" : "● PENDING";
+  const pillText = confirmed ? "CONFIRMED" : status === "checked_in" ? "CHECKED IN" : "PENDING";
   const pillColor = confirmed ? "#15803d" : status === "checked_in" ? BRAND.blue : "#b45309";
   const pillBg = confirmed ? "#dcfce7" : status === "checked_in" ? "#dbeafe" : "#fef3c7";
 
@@ -212,9 +221,9 @@ async function buildTicketPdf(t) {
     ? t.attendees
     : [{ name: t.attendee, qrToken: t.qrToken, status: t.status }];
 
-  const doc = new PDFDocument({ size: [W, 560], margin: 0 });
+  const doc = new PDFDocument({ size: [W, 600], margin: 0 });
   for (let i = 0; i < people.length; i++) {
-    if (i > 0) doc.addPage({ size: [W, 560], margin: 0 });
+    if (i > 0) doc.addPage({ size: [W, 600], margin: 0 });
     const png = await qrPng(people[i].qrToken, 300);
     drawTicketPage(doc, t, { ...people[i], seat: i + 1, total: people.length }, png);
   }
