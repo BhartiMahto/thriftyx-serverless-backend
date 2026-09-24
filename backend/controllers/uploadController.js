@@ -41,3 +41,34 @@ exports.getVideoUploadSignature = async (req, res) => {
     return res.status(500).json({ message: "Could not create an upload signature", statusCode: 500 });
   }
 };
+
+/**
+ * Signature for a DIRECT browser -> Cloudinary IMAGE upload — used by the
+ * login-free invite-only apply form (selfie question). Public (no login), but
+ * constrained by the SIGNED params to our folder + real image formats, so it
+ * can only add images to one folder (no HTML/JS/SVG payloads on our CDN).
+ */
+exports.getImageUploadSignature = async (req, res) => {
+  try {
+    const timestamp = Math.round(Date.now() / 1000);
+    const folder = "apply_selfies";
+    const allowedFormats = "jpg,jpeg,png,webp,heic,heif";
+    const signature = cloudinary.utils.api_sign_request(
+      { allowed_formats: allowedFormats, folder, timestamp },
+      process.env.CLOUD_API_SECRET
+    );
+
+    return res.status(200).json({
+      cloudName: process.env.CLOUD_NAME,
+      apiKey: process.env.CLOUD_API_KEY,
+      timestamp,
+      folder,
+      allowedFormats,
+      signature,
+      uploadUrl: `https://api.cloudinary.com/v1_1/${process.env.CLOUD_NAME}/image/upload`,
+    });
+  } catch (err) {
+    console.error("getImageUploadSignature error:", err);
+    return res.status(500).json({ message: "Could not create an upload signature", statusCode: 500 });
+  }
+};

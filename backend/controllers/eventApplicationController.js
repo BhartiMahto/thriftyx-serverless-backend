@@ -197,7 +197,7 @@ const submitApplication = async (req, res) => {
 const getApplicationPayInfo = async (req, res) => {
   try {
     const app = await EventApplication.findOne({ payToken: req.params.token }).populate(
-      "event_id", "name image cardImage date start_time end_time locations city"
+      "event_id", "name image cardImage date start_time end_time locations city soldOut"
     );
     if (!app) return res.status(404).json({ message: "Not found", statusCode: 404 });
     const when = app.event_id ? whenForCity(app.event_id, app.city) : { date: null, start_time: "", end_time: "" };
@@ -219,6 +219,8 @@ const getApplicationPayInfo = async (req, res) => {
         ticketName: app.ticketName,
         city: app.city,
         paidAt: app.paidAt,
+        // Event is full — the pay page shows "sold out" and blocks payment.
+        soldOut: Boolean(app.event_id?.soldOut),
         event: app.event_id ? { _id: app.event_id._id, name: app.event_id.name, image: app.event_id.image, date: when.date, start_time: when.start_time } : null,
       },
       statusCode: 200,
@@ -287,6 +289,8 @@ const payApplication = async (req, res) => {
     if (!app) return res.status(404).json({ message: "Not found", statusCode: 404 });
     if (app.status === "paid") return res.status(400).json({ message: "Already paid", statusCode: 400 });
     if (app.status !== "approved") return res.status(400).json({ message: "This application isn't ready for payment yet", statusCode: 400 });
+    // Event full: block payment even for approved applicants holding a pay link.
+    if (app.event_id?.soldOut) return res.status(409).json({ message: "This event is sold out", statusCode: 409 });
     // Charge the full payable: ticket price + 18% GST (+ 5% platform fee if male).
     const amount = applicationCharge(app).total;
     if (amount <= 0) return res.status(400).json({ message: "No amount is set", statusCode: 400 });

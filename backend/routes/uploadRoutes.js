@@ -16,4 +16,16 @@ router.get(
   uploadController.getVideoUploadSignature
 );
 
+// Signature for a direct browser -> Cloudinary IMAGE upload (login-free apply
+// form selfie). Public: the apply form has no login. Constrained to images + a
+// fixed folder by the signed params.
+router.get(
+  "/image-signature",
+  async (req, res, next) => {
+    await connectDB();
+    next();
+  },
+  uploadController.getImageUploadSignature
+);
+
 module.exports = router;
