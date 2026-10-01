@@ -67,6 +67,8 @@ provider:
     RAZORPAY_TEST_SECRET: ${env:RAZORPAY_TEST_SECRET, ''}
     RAZORPAY_LIVE_KEY: ${env:RAZORPAY_LIVE_KEY, ''}
     RAZORPAY_SECRET: ${env:RAZORPAY_SECRET, ''}
+    # Razorpay webhook signing secret (set in the Razorpay dashboard webhook config)
+    RAZORPAY_WEBHOOK_SECRET: ${env:RAZORPAY_WEBHOOK_SECRET, ''}
     # Auth
     GOOGLE_CLIENT_ID: ${env:GOOGLE_CLIENT_ID, ''}
     # Messaging (Twilio + SMTP)

@@ -42,7 +42,9 @@ app.use(
   })
 );
 
-app.use(express.json());
+// Capture the raw request body so the Razorpay webhook can verify its HMAC
+// signature (which is computed over the exact raw bytes, not the re-serialised JSON).
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/api/health", (req, res) => res.status(200).json({ ok: true }));

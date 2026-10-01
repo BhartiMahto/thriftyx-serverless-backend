@@ -355,10 +355,39 @@ function verifyGatewaySignature({ razorpay_order_id, razorpay_payment_id, razorp
   );
 }
 
+/**
+ * Finalize a normal checkout order from a CAPTURED Razorpay payment, without the
+ * client's verify callback — used by the webhook + manual reconciliation when the
+ * browser never called /verify (e.g. UPI, user closed the page). The caller must
+ * have already authenticated the payment (webhook signature / Razorpay API).
+ * Idempotent and matches verifyPayment's success path (completed + invoice +
+ * waitlist notice). Returns a small status object.
+ */
+const finalizeOrderPaid = async (rzpOrderId, paymentId) => {
+  if (!rzpOrderId) return { matched: false };
+  const order = await Order.findOne({ paymentOrderId: rzpOrderId });
+  if (!order) return { matched: false };
+  if (order.status === "completed") return { matched: true, already: true, kind: "order", id: order.order_id };
+  if (order.status !== "pending" && order.status !== "in_progress") {
+    return { matched: true, skipped: order.status, kind: "order", id: order.order_id };
+  }
+  order.status = "completed";
+  if (paymentId) order.payment_id = paymentId;
+  order.updatedBy = new Date();
+  await order.save();
+  try {
+    const { ensureInvoice } = require("../utils/documents");
+    await ensureInvoice(order);
+  } catch (e) { console.error("reconcile invoice:", e.message); }
+  await notifyWaitlisted(order);
+  return { matched: true, finalized: true, kind: "order", id: order.order_id, name: order.attendee_details?.name || null };
+};
+
 module.exports = {
   createPayment,
   verifyPayment,
   notifyWaitlisted,
+  finalizeOrderPaid,
   refundOrderPayment,
   fetchRefundStatus,
   createGatewayOrder,

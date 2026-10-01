@@ -532,6 +532,44 @@ const adminCreateApplication = async (req, res) => {
   }
 };
 
+/**
+ * Finalize an invite-only application from a CAPTURED Razorpay payment, without
+ * the client's verify callback — used by the webhook + manual reconciliation.
+ * Mirrors verifyApplicationPayment's success path (atomic approved→paid claim,
+ * create the confirmed Order + ticket/invoice, send confirmation), and self-heals
+ * a paid-but-no-order application. Idempotent.
+ */
+const finalizeApplicationPaid = async (rzpOrderId, paymentId) => {
+  if (!rzpOrderId) return { matched: false };
+  const app = await EventApplication.findOne({ paymentOrderId: rzpOrderId }).populate("event_id");
+  if (!app) return { matched: false };
+
+  if (app.status === "paid") {
+    // Already paid — just make sure the Order exists (self-heal).
+    if (!app.order_id && app.event_id) {
+      const order = await createOrderFromApplication(app, app.event_id, paymentId || app.paymentId || null);
+      app.order_id = order._id; await app.save();
+      notifyConfirmed(order);
+      return { matched: true, healed: true, kind: "application", name: app.name, order_id: order.order_id };
+    }
+    return { matched: true, already: true, kind: "application", name: app.name };
+  }
+  if (app.status !== "approved") return { matched: true, skipped: app.status, kind: "application", name: app.name };
+
+  // Atomically claim approved → paid so a duplicate webhook can't double-book.
+  const claimed = await EventApplication.findOneAndUpdate(
+    { _id: app._id, status: "approved" },
+    { $set: { status: "paid", paymentId: paymentId || null, paidAt: new Date(), updatedBy: new Date() } },
+    { new: true }
+  );
+  if (!claimed) return { matched: true, already: true, kind: "application", name: app.name };
+
+  const order = await createOrderFromApplication(claimed, app.event_id, paymentId);
+  claimed.order_id = order._id; await claimed.save();
+  notifyConfirmed(order);
+  return { matched: true, finalized: true, kind: "application", name: app.name, order_id: order.order_id };
+};
+
 module.exports = {
   getApplyInfo,
   submitApplication,
@@ -541,4 +579,5 @@ module.exports = {
   listApplications,
   updateApplication,
   adminCreateApplication,
+  finalizeApplicationPaid,
 };

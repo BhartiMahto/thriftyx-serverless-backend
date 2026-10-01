@@ -435,6 +435,25 @@ const updateRegistration = async (req, res) => {
   }
 };
 
+/**
+ * Finalize an accepted trip registration from a CAPTURED Razorpay payment without
+ * the client's verify callback — used by the webhook + manual reconciliation.
+ * Idempotent; mirrors verifyRegistrationPayment's success path.
+ */
+const finalizeTripPaid = async (rzpOrderId, paymentId) => {
+  if (!rzpOrderId) return { matched: false };
+  const reg = await TripRegistration.findOne({ paymentOrderId: rzpOrderId });
+  if (!reg) return { matched: false };
+  if (reg.status === "paid") return { matched: true, already: true, kind: "trip", name: reg.name };
+  if (reg.status !== "accepted") return { matched: true, skipped: reg.status, kind: "trip", name: reg.name };
+  reg.status = "paid";
+  if (paymentId) reg.paymentId = paymentId;
+  reg.paidAt = new Date();
+  reg.updatedBy = new Date();
+  await reg.save();
+  return { matched: true, finalized: true, kind: "trip", name: reg.name };
+};
+
 module.exports = {
   // public
   getTrips,
@@ -443,6 +462,7 @@ module.exports = {
   getRegistrationByToken,
   payRegistration,
   verifyRegistrationPayment,
+  finalizeTripPaid,
   // admin
   listAllTrips,
   createTrip,
