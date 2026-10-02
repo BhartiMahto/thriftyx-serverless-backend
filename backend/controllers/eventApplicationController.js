@@ -233,6 +233,14 @@ const getApplicationPayInfo = async (req, res) => {
 
 /** Create the real confirmed, paid Order once an application is paid. */
 const createOrderFromApplication = async (app, event, paymentId) => {
+  // Idempotency: one Razorpay payment must create at most ONE order. The client
+  // /verify and the webhook (or a double /verify) can race — the approved→paid
+  // claim covers the first pass, but the self-heal branch could otherwise create
+  // a second order in the window before order_id is set. Dedupe on payment_id.
+  if (paymentId) {
+    const existing = await Order.findOne({ payment_id: paymentId });
+    if (existing) return existing;
+  }
   const attendee = {
     name: app.name, email: app.email, phone: app.phone, gender: app.gender,
     age: app.age ?? ageFromDob(app.DOB), DOB: app.DOB || null, city: app.city,
