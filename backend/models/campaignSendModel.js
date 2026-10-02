@@ -13,6 +13,7 @@ const CampaignSend = new Schema(
     user_id: { type: Schema.Types.ObjectId, ref: "users", default: null },
     phone: { type: String, required: true },
     firstName: { type: String, default: "" },
+    city: { type: String, default: "" },
     status: { type: String, enum: ["sent", "failed"], required: true },
     messageSid: { type: String, default: "" },
     error: { type: String, default: "" },

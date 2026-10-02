@@ -27,6 +27,46 @@ const CAMPAIGNS = {
     audience: "all-women",
     label: "Buy 1 Get 1 — all women",
   },
+  // Re-invite everyone who applied for the 27 Sep Singles Meet to the 11 Oct one.
+  // Audience = that event's applicants (no coupon; `coupon` is just the log key).
+  SINGLES_11OCT: {
+    coupon: "SINGLES_11OCT",
+    sidEnv: "TWILIO_WA_SINGLES_11OCT_SID",
+    audience: "applicants:6aa2a33ee25ca43b628d46c6",
+    label: "Singles Meet 11 Oct — re-invite 27 Sep applicants",
+  },
+};
+
+// Never message the team's own test numbers from a campaign.
+const TEST_PHONES = new Set(["7091845291", "918247539519", "8247539519"]);
+const phone10 = (p) => String(p || "").replace(/\D/g, "").slice(-10);
+
+/** Audience from an event's applications (login-free invite-only forms), deduped
+ *  by phone. Used by "applicants:<eventId>" campaigns. */
+const resolveApplicants = async (eventId) => {
+  const EventApplication = require("../models/EventApplicationModel");
+  const apps = await EventApplication.find({ event_id: eventId, phone: { $nin: [null, ""] } })
+    .select("name phone city gender")
+    .sort({ createdBy: 1 })
+    .lean();
+  const seen = new Set();
+  const out = [];
+  for (const a of apps) {
+    const key = phone10(a.phone);
+    if (!key || seen.has(key) || TEST_PHONES.has(key)) continue;
+    seen.add(key);
+    out.push({
+      user_id: null,
+      phone: a.phone,
+      firstName: firstNameOf(a.name),
+      name: (a.name || "").trim(),
+      city: a.city || "",
+      gender: a.gender || "",
+      optedIn: true, // gave their number applying for this event
+      lastBooking: null,
+    });
+  }
+  return out;
 };
 
 const FEMALE = /^female$/i;
@@ -51,6 +91,10 @@ const toRecipient = (f, lastBooking = null) => ({
  * [{ user_id, phone, firstName, name, city, lastBooking }].
  */
 const resolveAudience = async (def) => {
+  // Event-applicant audience (e.g. re-invite past applicants) — not User-based.
+  if (def.audience && def.audience.startsWith("applicants:")) {
+    return resolveApplicants(def.audience.split(":")[1]);
+  }
   const females = await User.find({ gender: FEMALE, phone: { $nin: [null, ""] } })
     .select("_id name phone city gender notificationPreferences")
     .lean();
@@ -213,13 +257,13 @@ const send = async (req, res) => {
     for (const r of pending) {
       try {
         const sid = await sendWhatsappTemplate(r.phone, contentSid, { 1: r.firstName });
-        await CampaignSend.create({ campaign: def.coupon, user_id: r.user_id, phone: r.phone, firstName: r.firstName, status: "sent", messageSid: sid });
+        await CampaignSend.create({ campaign: def.coupon, user_id: r.user_id, phone: r.phone, firstName: r.firstName, city: r.city || "", status: "sent", messageSid: sid });
         sent++;
       } catch (e) {
         // Log failures too (dedupe key), so a bad number doesn't block the batch
         // or get retried forever.
         try {
-          await CampaignSend.create({ campaign: def.coupon, user_id: r.user_id, phone: r.phone, firstName: r.firstName, status: "failed", error: String(e.message).slice(0, 300) });
+          await CampaignSend.create({ campaign: def.coupon, user_id: r.user_id, phone: r.phone, firstName: r.firstName, city: r.city || "", status: "failed", error: String(e.message).slice(0, 300) });
         } catch { /* duplicate key — already logged */ }
         failed++;
       }
@@ -272,7 +316,7 @@ const delivery = async (req, res) => {
       return {
         phone: l.phone,
         name: u?.name || l.firstName || "",
-        city: u?.city || "",
+        city: u?.city || l.city || "",
         deliveryStatus: ds,
         received: RECEIVED.has(ds),
         notReceived,
