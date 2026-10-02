@@ -259,6 +259,11 @@ const createOrderFromApplication = async (app, event, paymentId) => {
   });
   try {
     const { ensureTicket, ensureInvoice } = require("../utils/documents");
+    // Attach the FULL event doc (date + locations) so document generation resolves
+    // the per-city venue/date. Without this, ensureInvoice populates event_id with
+    // only name+city, and ensureTicket then skips its own fuller populate — baking
+    // a "Date to be announced / top-level city" ticket.
+    order.event_id = event;
     await ensureInvoice(order);   // GST tax invoice (attached to the email)
     await ensureTicket(order);    // ticket PDF with entry QR
   } catch (e) { console.error("application docs:", e.message); }

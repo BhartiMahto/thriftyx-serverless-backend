@@ -49,7 +49,12 @@ async function ensureTicket(order) {
   if (!paid || !confirmed) return null;
   if (!s3.isConfigured) return null;
 
-  if (!order.populated || !order.event_id?.name) {
+  // Re-populate unless the event is loaded WITH the fields this ticket needs.
+  // Guarding on `name` alone isn't enough: another step (e.g. ensureInvoice) may
+  // have populated event_id with only name+city, which would make the ticket fall
+  // back to the top-level city + a blank date. `locations === undefined` means the
+  // per-city fields weren't selected, so pull the full set.
+  if (!order.event_id?.name || order.event_id.locations === undefined) {
     await order.populate("event_id", "name date start_time venue venue_name city locations cordinates");
   }
   const event = order.event_id || {};
