@@ -248,8 +248,13 @@ const createOrderFromApplication = async (app, event, paymentId) => {
     answers: Array.isArray(app.answers) ? app.answers : [],
   };
   const { base, gst, fee, total } = applicationCharge(app);
+  // Link (or create) a customer account by phone/email so this login-free
+  // booking shows up in that person's profile ("My Tickets") and they can
+  // self-serve a ticket download / cancellation + refund after OTP login.
+  const { findOrCreateUserForAttendee } = require("../utils/userLink");
+  const linkedUser = await findOrCreateUserForAttendee(attendee);
   const order = await Order.create({
-    user_id: null,
+    user_id: linkedUser?._id || null,
     event_id: event._id,
     tickets: [{ name: app.ticketName || "Invite", count: 1, price: base }],
     total_price: base, booking_fee: fee, gst: gst, discount: 0, grand_total: total,

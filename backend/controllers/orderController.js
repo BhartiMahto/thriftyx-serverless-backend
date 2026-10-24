@@ -38,6 +38,14 @@ const notifyBookingConfirmed = async (order) => {
   try {
     await order.populate("user_id", "email phone name");
     await order.populate("event_id", "name date start_time end_time venue_name venue city locations");
+    // Guarantee the ticket + invoice PDFs exist BEFORE building the message. If
+    // generation was slow/failed at payment time, the earlier confirmation would
+    // otherwise go out with no ticket attached (WhatsApp template needs the file)
+    // — this makes the confirmation self-heal and always carry the documents.
+    try {
+      if (!order.invoice_url) await ensureInvoice(order);
+      if (!order.ticket_url) await ensureTicket(order);
+    } catch (e) { console.error("confirm doc ensure:", e.message); }
     const to = order.attendee_details?.email || order.user_id?.email;
     const phone = order.attendee_details?.phone || order.user_id?.phone;
     const who = firstName(order.attendee_details?.name || order.user_id?.name);
@@ -530,7 +538,11 @@ const createOrder = async (req, res) => {
 /** GET /api/order/my — orders belonging to the authenticated customer. */
 const getMyOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ user_id: req.user._id })
+    // Match the account's own linked orders PLUS any booking whose attendee
+    // phone/email matches this (OTP-verified) account — so login-free /
+    // invite-only bookings also surface in the customer's "My Tickets".
+    const { myOrdersFilter } = require("../utils/userLink");
+    const orders = await Order.find(myOrdersFilter(req.user))
       .populate("event_id", "name type city venue venue_name date image start_time locations")
       .sort({ createdBy: -1 })
       .lean();
@@ -1491,10 +1503,21 @@ const rescheduleOrder = async (req, res) => {
 
     const target = await Event.findById(eventId);
     if (!target) return res.status(404).json({ message: "That event was not found", statusCode: 404 });
-    // Invite-only events can only be joined via the application + approval flow —
-    // never by rescheduling an existing booking onto them (mirrors createOrder).
+    // Invite-only events are normally join-only via the application + approval flow.
+    // EXCEPTION: an already-approved (completed + confirmed) attendee may move
+    // between occurrences of the SAME series — i.e. another invite-only event with
+    // the same name (same type + age group) — without re-applying. Anyone else
+    // (unpaid/waitlisted/different series) must still apply through the form.
     if (target.inviteOnly) {
-      return res.status(400).json({ message: "That event is invite-only — please apply through its form.", statusCode: 400 });
+      // Same-series occurrences (shared seriesKey) are reschedule alternatives, so
+      // an already-approved attendee may move between them without re-applying.
+      const srcEv = await Event.findById(order.event_id).select("seriesKey");
+      const sameSeries = srcEv && srcEv.seriesKey && target.seriesKey &&
+        String(srcEv.seriesKey) === String(target.seriesKey);
+      const approvedAttendee = order.status === "completed" && order.applicationStatus === "confirmed";
+      if (!(sameSeries && approvedAttendee)) {
+        return res.status(400).json({ message: "That event is invite-only — please apply through its form.", statusCode: 400 });
+      }
     }
     const tDate = target.date ? new Date(target.date) : null;
     if (tDate && tDate.getTime() <= Date.now()) {

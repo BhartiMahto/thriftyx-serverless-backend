@@ -14,6 +14,15 @@ const Event = new Schema({
         default: null,
         required: false
     },
+    // Groups different occurrences of the SAME series (same type + age group) so a
+    // confirmed attendee can self-reschedule between them regardless of each
+    // event's display name/date. Events sharing a seriesKey are reschedule
+    // alternatives for one another. Null = not part of a reschedulable series.
+    seriesKey: {
+        type: String,
+        default: null,
+        required: false
+    },
     city: {
         type: String,
         unique: false,
