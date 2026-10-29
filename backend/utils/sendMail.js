@@ -49,8 +49,29 @@ const sendMail = async (to, subject, message, attachments) => {
     from: process.env.MAIL_FROM || '"Thrifty X" <no-reply@thriftyx.com>',
     to: realTo,
     subject: realSubject,
-    text: message,
   };
+  // Callers pass an HTML body (<p>, <b>, <a>…). Send it as real HTML so clients
+  // render it (previously it went in `text`, so recipients saw raw tags), with a
+  // plain-text fallback derived from the markup for text-only clients + spam
+  // scoring. A body with no tags is sent as plain text, unchanged.
+  const isHtml = /<[a-z!/][\s\S]*>/i.test(message || "");
+  if (isHtml) {
+    mail.html = message;
+    mail.text = String(message)
+      .replace(/<\s*br\s*\/?>/gi, "\n")
+      .replace(/<\/\s*(p|div|h[1-6]|li|tr)\s*>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/^[ \t]+/gm, "")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  } else {
+    mail.text = message;
+  }
   if (Array.isArray(attachments) && attachments.length) mail.attachments = attachments;
 
   await getTransporter().sendMail(mail);
