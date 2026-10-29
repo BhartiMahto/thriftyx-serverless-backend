@@ -610,30 +610,41 @@ const rateOrder = async (req, res) => {
 /** PATCH /api/order/:id/cancel — customer cancels their own booking. */
 const cancelOrder = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id);
+    const existing = await Order.findById(req.params.id);
 
-    if (!order) {
+    if (!existing) {
       return res.status(404).json({ message: "Order not found", statusCode: 404 });
     }
 
-    if (String(order.user_id) !== String(req.user._id)) {
+    if (String(existing.user_id) !== String(req.user._id)) {
       return res.status(403).json({ message: "This booking is not yours", statusCode: 403 });
     }
 
-    if (order.status === "cancelled") {
+    if (existing.status === "cancelled") {
       return res.status(409).json({ message: "Booking is already cancelled", statusCode: 409 });
     }
 
-    if (order.checkedIn) {
+    if (existing.checkedIn) {
       return res
         .status(409)
         .json({ message: "Cannot cancel after check-in", statusCode: 409 });
     }
 
-    const wasPaid = order.status === "completed";
-    order.status = "cancelled";
-    order.cancelledAt = new Date();
-    order.updatedBy = new Date();
+    const wasPaid = existing.status === "completed";
+
+    // Atomically CLAIM the cancel before issuing any refund. A double-submit
+    // (double-click / client retry) otherwise lets two requests both pass the
+    // not-cancelled check above and each fire a refund on the same payment —
+    // the cause of an earlier double refund. Only the request that actually
+    // flips the status (matches this filter) proceeds; a loser gets null → 409.
+    const order = await Order.findOneAndUpdate(
+      { _id: existing._id, status: { $ne: "cancelled" }, checkedIn: { $ne: true } },
+      { $set: { status: "cancelled", cancelledAt: new Date(), updatedBy: new Date() } },
+      { new: true }
+    );
+    if (!order) {
+      return res.status(409).json({ message: "Booking is already cancelled", statusCode: 409 });
+    }
 
     // Hand any spent pass credit back (solo pass booking OR the free seat of a
     // paid group booking). Null the id (persisted below) so it can't be
@@ -664,7 +675,12 @@ const cancelOrder = async (req, res) => {
     } catch { /* no event date → treat as fully refundable */ }
     const hoursToEvent = evDate ? (evDate.getTime() - Date.now()) / 3600000 : Infinity;
     const refundPercent = refundPercentForHours(hoursToEvent);
-    const refundAmount = round2((order.grand_total ?? 0) * (refundPercent / 100));
+    // The platform/booking fee is NON-REFUNDABLE on a customer self-cancel; the
+    // time-tier applies only to the refundable remainder (ticket + GST). Admin
+    // refunds (refundBooking) still return the full amount, fee included.
+    const platformFee = round2(order.booking_fee ?? 0);
+    const refundableBase = round2((order.grand_total ?? 0) - platformFee);
+    const refundAmount = round2(refundableBase * (refundPercent / 100));
 
     let refundNote = null;
     const eligibleForMoneyRefund =
@@ -674,7 +690,9 @@ const cancelOrder = async (req, res) => {
     if (eligibleForMoneyRefund) {
       try {
         order.refund = await refundOrderPayment(order, refundAmount);
-        refundNote = `As per our cancellation policy, ${refundPercent}% (₹${refundAmount}) is being refunded.`;
+        refundNote = platformFee > 0
+          ? `As per our cancellation policy the platform fee (₹${platformFee}) is non-refundable; ${refundPercent}% of the remaining amount (₹${refundAmount}) is being refunded.`
+          : `As per our cancellation policy, ${refundPercent}% (₹${refundAmount}) is being refunded.`;
       } catch (e) {
         // Razorpay SDK rejects with { statusCode, error: { description, reason } }.
         const reason = e?.error?.description || e?.error?.reason || e?.message || "unknown error";
@@ -696,9 +714,10 @@ const cancelOrder = async (req, res) => {
       let body;
       if (order.refund?.id && order.refund?.status !== "failed") {
         const ref = order.refund.rrn || order.refund.id;
+        const feeLine = platformFee > 0 ? `The platform fee (₹${platformFee}) is non-refundable. ` : "";
         body =
-          `Your booking${ev} has been cancelled. As per our cancellation policy, ` +
-          `₹${order.refund.amount} (${refundPercent}%) is being refunded to your original payment method (ref ${ref}), ` +
+          `Your booking${ev} has been cancelled. ${feeLine}As per our cancellation policy, ` +
+          `₹${order.refund.amount} (${refundPercent}% of the refundable amount) is being refunded to your original payment method (ref ${ref}), ` +
           `usually within 5–7 business days. Questions? ${SUPPORT}\n— IRL Social Hive`;
       } else {
         body =
@@ -708,7 +727,7 @@ const cancelOrder = async (req, res) => {
 
       // WhatsApp (approved Utility template): {{3}} = concise refund status.
       const waRefund = (order.refund?.id && order.refund?.status !== "failed")
-        ? `₹${order.refund.amount} (${refundPercent}%) is being refunded to your original payment method.`
+        ? `${platformFee > 0 ? `Platform fee ₹${platformFee} is non-refundable. ` : ""}₹${order.refund.amount} (${refundPercent}% of the refundable amount) is being refunded to your original payment method.`
         : (refundNote || "No refund applies as per our policy.");
       await sendWaTemplate(
         order.attendee_details?.phone || order.user_id?.phone,
@@ -754,6 +773,7 @@ const cancelOrder = async (req, res) => {
         status: order.status,
         cancelledAt: order.cancelledAt,
         refundPercent: eligibleForMoneyRefund ? refundPercent : 0,
+        platformFeeRetained: eligibleForMoneyRefund ? platformFee : 0,
         // Raw gateway `error` is deliberately omitted — it's admin-only.
         refund: (order.refund?.id || order.refund?.status)
           ? { id: order.refund.id, status: order.refund.status, amount: order.refund.amount, rrn: order.refund.rrn, at: order.refund.at }
@@ -1643,10 +1663,22 @@ const rescheduleOrder = async (req, res) => {
  */
 const refundBooking = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ message: "Booking not found", statusCode: 404 });
-    if (order.refund?.id) {
-      return res.status(409).json({ message: "This booking is already refunded", statusCode: 409 });
+    // Atomically CLAIM the refund before hitting the gateway so two concurrent
+    // admin clicks can't each issue a refund on the same payment. Proceeds only
+    // if not already refunded (no refund.id) and not currently being processed;
+    // a prior FAILED refund (id still null) stays retryable.
+    const order = await Order.findOneAndUpdate(
+      { _id: req.params.id, "refund.id": null, "refund.status": { $ne: "processing" } },
+      { $set: { "refund.status": "processing" } },
+      { new: true }
+    );
+    if (!order) {
+      const existing = await Order.findById(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Booking not found", statusCode: 404 });
+      if (existing.refund?.id) {
+        return res.status(409).json({ message: "This booking is already refunded", statusCode: 409 });
+      }
+      return res.status(409).json({ message: "A refund is already being processed for this booking", statusCode: 409 });
     }
 
     let refund = null;
@@ -1658,11 +1690,16 @@ const refundBooking = async (req, res) => {
         const reason = e?.error?.description || e?.error?.reason || e?.message || "unknown error";
         console.error("refundBooking failed:", e?.statusCode || "", reason, JSON.stringify(e?.error || {}));
         // Record why it failed so it can be retried knowingly (id stays null,
-        // so this endpoint can be called again to retry once the cause is fixed).
+        // status flips off "processing", so this endpoint can be called again
+        // to retry once the cause is fixed).
         order.refund = { id: null, status: "failed", amount: order.grand_total ?? 0, error: reason, at: new Date() };
         await order.save();
         return res.status(502).json({ message: `Refund failed: ${reason}`, statusCode: 502 });
       }
+    } else {
+      // Nothing to refund at the gateway (pass-covered / zero value) — clear the
+      // claim sentinel so the record isn't left stuck on "processing".
+      order.refund = { id: null, status: null, amount: 0, at: new Date() };
     }
 
     // Return any Golden Pass credit spent on this booking.
