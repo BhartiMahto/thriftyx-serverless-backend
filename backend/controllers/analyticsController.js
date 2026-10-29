@@ -14,12 +14,22 @@ const User = require("../models/userModel");
 
 const PAID = "completed";
 
-/** Parses ?from / ?to, defaulting to the last 12 months. */
+/** Parses ?from / ?to, defaulting to the last 12 whole months. */
 const parseRange = (query) => {
   const to = query.to ? new Date(query.to) : new Date();
+  // Default start = 1st of the month, 11 months back → 12 whole month buckets.
+  // Snapping to the 1st BEFORE shifting months keeps the oldest bucket a fixed,
+  // complete month; otherwise it kept today's day-of-month, so the earliest
+  // month started mid-month and lost a day each day (and risked the
+  // "Oct 31 → Nov 31 → Dec 1" overflow).
   const from = query.from
     ? new Date(query.from)
-    : new Date(new Date(to).setMonth(to.getMonth() - 11));
+    : (() => {
+        const d = new Date(to);
+        d.setDate(1);
+        d.setMonth(d.getMonth() - 11);
+        return d;
+      })();
 
   from.setHours(0, 0, 0, 0);
   to.setHours(23, 59, 59, 999);
