@@ -248,6 +248,149 @@ const financeSummary = async (req, res) => {
   }
 };
 
+/* --------------------- City-wise sales export (per month) --------------------- */
+
+const isoDay = (d) => (d ? new Date(d).toISOString().slice(0, 10) : "");
+const isoDT = (d) => (d ? new Date(d).toISOString().slice(0, 16).replace("T", " ") : "");
+
+/**
+ * Turns ?month=YYYY-MM into a [from,to] window; falls back to ?from/?to, else the
+ * current calendar month. Returns the label too (for the file name / heading).
+ */
+const monthRange = (query) => {
+  if (query.month && /^\d{4}-\d{2}$/.test(query.month)) {
+    const [y, m] = query.month.split("-").map(Number);
+    const from = new Date(y, m - 1, 1, 0, 0, 0, 0);
+    const to = new Date(y, m, 0, 23, 59, 59, 999); // day 0 of next month = last day
+    return { from, to, label: query.month, valid: true };
+  }
+  const r = parseRange(query);
+  const label = query.from || query.to ? `${isoDay(r.from)}_to_${isoDay(r.to)}` : "all";
+  return { ...r, label };
+};
+
+/**
+ * GET /api/admin/finance/city-sales?month=YYYY-MM  (or ?from=&to=)
+ *
+ * City-wise sales for the selected month, with the full payment breakdown the
+ * finance team needs: ticket amount, platform fee, GST (18%), discount, total,
+ * and refunds processed on those bookings. Returns BOTH a per-city summary and
+ * the per-booking transactions (the frontend writes them into one CSV sheet).
+ *
+ * "Sales" = real money collected (paid orders with a payment id, grand_total>0,
+ * excluding comp/manually-added bookings). A refund is counted when the gateway
+ * actually processed it (refund.id set and not "failed"). Net = gross − refunds.
+ */
+const citySales = async (req, res) => {
+  try {
+    const { from, to, label, valid } = monthRange(req.query);
+    if (!valid) return res.status(400).json({ message: "Invalid month/date range", statusCode: 400 });
+
+    // Money that was actually collected in the window. We do NOT exclude refunded
+    // orders here (unlike the P&L) — refunds are reported in their own columns.
+    const orders = await Order.find({
+      createdBy: { $gte: from, $lte: to },
+      grand_total: { $gt: 0 },
+      payment_id: { $ne: null },
+      addedByAdmin: { $ne: true },
+    })
+      .populate("event_id", "name city")
+      .select(
+        "event_id event_city attendee_details attendees tickets total_price booking_fee gst discount grand_total " +
+          "status payment_id paymentOrderId order_id invoice_no coupon_code refund createdBy"
+      )
+      .sort({ createdBy: 1 })
+      .lean();
+
+    const refundProcessed = (o) => !!(o.refund && o.refund.id && o.refund.status !== "failed");
+    const cityOf = (o) =>
+      (o.event_city && o.event_city.trim()) ||
+      (o.attendee_details && o.attendee_details.city && o.attendee_details.city.trim()) ||
+      (o.event_id && o.event_id.city && String(o.event_id.city).trim()) ||
+      "Unknown";
+
+    const transactions = [];
+    const byCity = new Map();
+
+    for (const o of orders) {
+      const city = cityOf(o);
+      const booker = o.attendee_details || {};
+      const guests = Math.max(Array.isArray(o.attendees) ? o.attendees.length : 0, 1);
+      const refunded = refundProcessed(o);
+      const refundAmt = refunded ? round2(o.refund.amount || 0) : 0;
+      const ticket = round2(o.total_price || 0);
+      const platformFee = round2(o.booking_fee || 0);
+      const gst = round2(o.gst || 0);
+      const discount = round2(o.discount || 0);
+      const total = round2(o.grand_total || 0);
+
+      transactions.push({
+        bookedAt: isoDay(o.createdBy),
+        city,
+        event: o.event_id?.name || "",
+        customer: booker.name || "",
+        email: booker.email || "",
+        phone: booker.phone || "",
+        invoiceNo: o.invoice_no || "",
+        paymentId: o.payment_id || "",
+        orderId: o.order_id || String(o._id),
+        ticket,
+        platformFee,
+        gst,
+        discount,
+        total,
+        status: o.status || "",
+        refundAmount: refundAmt,
+        refundStatus: refunded ? o.refund.status || "processed" : "",
+        refundRef: refunded ? o.refund.rrn || o.refund.id || "" : "",
+        refundAt: refunded ? isoDT(o.refund.at) : "",
+        net: round2(total - refundAmt),
+      });
+
+      const c = byCity.get(city) || {
+        city, bookings: 0, guests: 0, ticket: 0, platformFee: 0,
+        gst: 0, discount: 0, grossTotal: 0, refundCount: 0, refundAmount: 0, net: 0,
+      };
+      c.bookings += 1;
+      c.guests += guests;
+      c.ticket = round2(c.ticket + ticket);
+      c.platformFee = round2(c.platformFee + platformFee);
+      c.gst = round2(c.gst + gst);
+      c.discount = round2(c.discount + discount);
+      c.grossTotal = round2(c.grossTotal + total);
+      if (refunded) { c.refundCount += 1; c.refundAmount = round2(c.refundAmount + refundAmt); }
+      c.net = round2(c.grossTotal - c.refundAmount);
+      byCity.set(city, c);
+    }
+
+    const summary = [...byCity.values()].sort((a, b) => b.net - a.net);
+    const totals = summary.reduce(
+      (t, c) => ({
+        bookings: t.bookings + c.bookings,
+        guests: t.guests + c.guests,
+        ticket: round2(t.ticket + c.ticket),
+        platformFee: round2(t.platformFee + c.platformFee),
+        gst: round2(t.gst + c.gst),
+        discount: round2(t.discount + c.discount),
+        grossTotal: round2(t.grossTotal + c.grossTotal),
+        refundCount: t.refundCount + c.refundCount,
+        refundAmount: round2(t.refundAmount + c.refundAmount),
+        net: round2(t.net + c.net),
+      }),
+      { bookings: 0, guests: 0, ticket: 0, platformFee: 0, gst: 0, discount: 0, grossTotal: 0, refundCount: 0, refundAmount: 0, net: 0 }
+    );
+
+    res.status(200).json({
+      message: "City-wise sales",
+      data: { month: label, range: { from, to }, summary, transactions, totals },
+      statusCode: 200,
+    });
+  } catch (e) {
+    console.error("citySales error:", e.message);
+    res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
 /* --------------------------- Bank reconciliation --------------------------- */
 
 /**
@@ -346,6 +489,7 @@ module.exports = {
   deleteEntry,
   importEntries,
   financeSummary,
+  citySales,
   reconcile,
   markReconciled,
 };

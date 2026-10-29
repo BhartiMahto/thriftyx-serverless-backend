@@ -102,6 +102,7 @@ router.get("/analytics/traffic-export", require("../controllers/webTrafficContro
 // --- Financial Insights ledger (super-admin, or sub-admins with "finance" perm) ---
 const finance = require("../controllers/financeController");
 router.get("/finance/summary", requireModule("finance", "VIEW"), finance.financeSummary);
+router.get("/finance/city-sales", requireModule("finance", "VIEW"), finance.citySales);
 router.get("/finance/entries", requireModule("finance", "VIEW"), finance.listEntries);
 router.post("/finance/entries", requireModule("finance", "EDIT"), finance.createEntry);
 router.post("/finance/import", requireModule("finance", "EDIT"), finance.importEntries);
