@@ -20,13 +20,35 @@ const inr = (n) => `₹${Number(n || 0).toLocaleString("en-IN")}`;
 // for invite-only / admin-added bookings — regular website checkout is separate).
 const GST_RATE = 0.18;
 const PLATFORM_FEE_RATE = 0.05;
-const applicationCharge = (app) => {
+// `discount` (optional) is a coupon discount on the ticket price. GST and the
+// male platform fee are charged on the DISCOUNTED net, mirroring normal cart
+// checkout — so a 100%-off coupon makes the whole payable ₹0. With no discount
+// (the default) the result is identical to before, so existing callers are
+// unaffected.
+const applicationCharge = (app, discount = 0) => {
   const base = round2(num(app.amount));
   const isMale = String(app.gender || "").trim().toLowerCase() === "male";
-  const fee = isMale ? round2(base * PLATFORM_FEE_RATE) : 0;
-  const gst = round2(base * GST_RATE);
-  const total = round2(base + gst + fee);
-  return { base, gst, fee, total, isMale };
+  const d = round2(Math.max(0, Math.min(num(discount), base)));
+  const net = round2(base - d);
+  const fee = isMale ? round2(net * PLATFORM_FEE_RATE) : 0;
+  const gst = round2(net * GST_RATE);
+  const total = round2(net + gst + fee);
+  return { base, discount: d, net, gst, fee, total, isMale };
+};
+
+/**
+ * Validate a coupon against an approved application (login-free, so there's no
+ * signed-in user — eligibility is judged on the applicant's own gender/city).
+ * Returns { ok, discount, coupon } or { ok:false, reason }.
+ */
+const evalApplicationCoupon = async (app, rawCode) => {
+  const { evaluateCoupon } = require("./couponController");
+  const base = round2(num(app.amount));
+  return evaluateCoupon(rawCode, base, null, {
+    eventCity: app.city,
+    attendees: [{ gender: app.gender }],
+    unitPrices: [base],
+  });
 };
 
 /**
@@ -207,6 +229,7 @@ const getApplicationPayInfo = async (req, res) => {
       data: {
         _id: app._id,
         name: app.name,
+        gender: app.gender,
         status: app.status,
         // `amount` = the FULL payable (base + GST + male fee) so the pay page's
         // "Amount to pay" / "Pay ₹X" matches what Razorpay actually charges.
@@ -231,6 +254,41 @@ const getApplicationPayInfo = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/event-apply/pay/:token/coupon — preview a coupon on the pay page.
+ * Returns the discounted breakdown so the applicant sees the new "Pay ₹X"
+ * before paying. No usage is recorded here (that happens when the order is made).
+ */
+const applyApplicationCoupon = async (req, res) => {
+  try {
+    const app = await EventApplication.findOne({ payToken: req.params.token });
+    if (!app) return res.status(404).json({ message: "Not found", statusCode: 404 });
+    if (app.status === "paid") return res.status(400).json({ valid: false, reason: "Already paid", statusCode: 200 });
+
+    const result = await evalApplicationCoupon(app, req.body.code);
+    if (!result.ok) {
+      return res.status(200).json({ valid: false, reason: result.reason, statusCode: 200 });
+    }
+    const charge = applicationCharge(app, result.discount);
+    return res.status(200).json({
+      valid: true,
+      code: result.coupon.code,
+      description: result.coupon.description || null,
+      discount: result.discount,
+      // The full discounted breakdown so the page can refresh its summary.
+      ticketPrice: charge.base,
+      net: charge.net,
+      gst: charge.gst,
+      platformFee: charge.fee,
+      payable: charge.total,
+      statusCode: 200,
+    });
+  } catch (error) {
+    console.error("applyApplicationCoupon error:", error);
+    return res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
 /** Create the real confirmed, paid Order once an application is paid. */
 const createOrderFromApplication = async (app, event, paymentId) => {
   // Idempotency: one Razorpay payment must create at most ONE order. The client
@@ -247,7 +305,9 @@ const createOrderFromApplication = async (app, event, paymentId) => {
     maritalStatus: app.maritalStatus, reasonToJoin: app.reasonToJoin || null,
     answers: Array.isArray(app.answers) ? app.answers : [],
   };
-  const { base, gst, fee, total } = applicationCharge(app);
+  // A coupon applied at the pay step (persisted on the application when payment
+  // started) → the order records the discount, net GST/fee and coupon code.
+  const { base, discount, gst, fee, total } = applicationCharge(app, num(app.couponDiscount));
   // Link (or create) a customer account by phone/email so this login-free
   // booking shows up in that person's profile ("My Tickets") and they can
   // self-serve a ticket download / cancellation + refund after OTP login.
@@ -257,7 +317,8 @@ const createOrderFromApplication = async (app, event, paymentId) => {
     user_id: linkedUser?._id || null,
     event_id: event._id,
     tickets: [{ name: app.ticketName || "Invite", count: 1, price: base }],
-    total_price: base, booking_fee: fee, gst: gst, discount: 0, grand_total: total,
+    total_price: base, booking_fee: fee, gst: gst, discount: discount, grand_total: total,
+    coupon_code: app.couponCode || null,
     status: "completed",
     applicationStatus: "confirmed",
     isTnC_accepted: true,
@@ -270,6 +331,14 @@ const createOrderFromApplication = async (app, event, paymentId) => {
     createdBy: new Date(),
     updatedBy: new Date(),
   });
+  // Count the redemption once, only when a new order is actually created (the
+  // dedupe above short-circuits re-entries, so this never double-counts).
+  if (app.couponCode) {
+    try {
+      const Coupon = require("../models/couponModel");
+      await Coupon.updateOne({ code: String(app.couponCode).toUpperCase() }, { $inc: { usedCount: 1 } });
+    } catch (e) { console.error("coupon usedCount inc failed:", e.message); }
+  }
   try {
     const { ensureTicket, ensureInvoice } = require("../utils/documents");
     // Attach the FULL event doc (date + locations) so document generation resolves
@@ -309,9 +378,33 @@ const payApplication = async (req, res) => {
     if (app.status !== "approved") return res.status(400).json({ message: "This application isn't ready for payment yet", statusCode: 400 });
     // Event full: block payment even for approved applicants holding a pay link.
     if (app.event_id?.soldOut) return res.status(409).json({ message: "This event is sold out", statusCode: 409 });
-    // Charge the full payable: ticket price + 18% GST (+ 5% platform fee if male).
-    const amount = applicationCharge(app).total;
-    if (amount <= 0) return res.status(400).json({ message: "No amount is set", statusCode: 400 });
+
+    // Optional coupon (e.g. a women's free-entry code). Re-validated server-side
+    // here — never trust the client's amount — and persisted on the application
+    // so /verify and the created Order use the SAME discounted figures.
+    let discount = 0;
+    if (req.body.couponCode) {
+      const result = await evalApplicationCoupon(app, req.body.couponCode);
+      if (!result.ok) return res.status(400).json({ message: result.reason || "Invalid coupon", statusCode: 400 });
+      discount = result.discount;
+      app.couponCode = result.coupon.code;
+      app.couponDiscount = discount;
+    } else {
+      app.couponCode = null;
+      app.couponDiscount = 0;
+    }
+
+    // Payable: (ticket − discount) + 18% GST (+ 5% platform fee if male) on the net.
+    const amount = applicationCharge(app, discount).total;
+
+    // Fully covered by the coupon → no gateway hop: confirm the free booking now.
+    if (amount <= 0) {
+      const order = await createOrderFromApplication(app, app.event_id, `free_${crypto.randomBytes(6).toString("hex")}`);
+      app.status = "paid"; app.paidAt = new Date(); app.order_id = order._id;
+      await app.save();
+      notifyConfirmed(order);
+      return res.status(200).json({ message: "Confirmed", data: { free: true, status: "paid" }, statusCode: 200 });
+    }
 
     const gw = await createGatewayOrder(Math.round(amount * 100), `app_${String(app._id).slice(-10)}`);
     app.paymentOrderId = gw.paymentOrderId;
@@ -592,6 +685,7 @@ module.exports = {
   getApplyInfo,
   submitApplication,
   getApplicationPayInfo,
+  applyApplicationCoupon,
   payApplication,
   verifyApplicationPayment,
   listApplications,

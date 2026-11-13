@@ -34,6 +34,12 @@ const eventApplicationSchema = new Schema({
   ticketName: { type: String, default: null },
   amount: { type: Number, default: 0 },
 
+  // Coupon applied at the login-free pay step (e.g. a women's free-entry code).
+  // Persisted when payment starts so /verify + the created Order use the same
+  // discounted figures the gateway was charged for.
+  couponCode: { type: String, default: null },
+  couponDiscount: { type: Number, default: 0 },
+
   status: {
     type: String,
     enum: ["pending", "approved", "rejected", "paid"],

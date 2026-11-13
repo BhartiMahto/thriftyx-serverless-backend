@@ -8,6 +8,7 @@ const withDb = async (req, res, next) => { await connectDB(); next(); };
 
 /* ---- Login-free payment (approved application) — literal paths first ---- */
 router.get("/pay/:token", withDb, ctrl.getApplicationPayInfo);
+router.post("/pay/:token/coupon", withDb, ctrl.applyApplicationCoupon);
 router.post("/pay/:token", withDb, ctrl.payApplication);
 router.post("/pay/:token/verify", withDb, ctrl.verifyApplicationPayment);
 
