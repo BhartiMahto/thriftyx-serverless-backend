@@ -263,24 +263,32 @@ const applyApplicationCoupon = async (req, res) => {
   try {
     const app = await EventApplication.findOne({ payToken: req.params.token });
     if (!app) return res.status(404).json({ message: "Not found", statusCode: 404 });
-    if (app.status === "paid") return res.status(400).json({ valid: false, reason: "Already paid", statusCode: 200 });
+    // The client reads res.data, like every other endpoint, so the payload is
+    // ALWAYS wrapped in `data` — including the not-valid cases — so the pay page
+    // can read {valid,reason} instead of crashing on an undefined body.
+    if (app.status === "paid") {
+      return res.status(200).json({ message: "Coupon", data: { valid: false, reason: "Already paid" }, statusCode: 200 });
+    }
 
     const result = await evalApplicationCoupon(app, req.body.code);
     if (!result.ok) {
-      return res.status(200).json({ valid: false, reason: result.reason, statusCode: 200 });
+      return res.status(200).json({ message: "Coupon", data: { valid: false, reason: result.reason }, statusCode: 200 });
     }
     const charge = applicationCharge(app, result.discount);
     return res.status(200).json({
-      valid: true,
-      code: result.coupon.code,
-      description: result.coupon.description || null,
-      discount: result.discount,
-      // The full discounted breakdown so the page can refresh its summary.
-      ticketPrice: charge.base,
-      net: charge.net,
-      gst: charge.gst,
-      platformFee: charge.fee,
-      payable: charge.total,
+      message: "Coupon",
+      data: {
+        valid: true,
+        code: result.coupon.code,
+        description: result.coupon.description || null,
+        discount: result.discount,
+        // The full discounted breakdown so the page can refresh its summary.
+        ticketPrice: charge.base,
+        net: charge.net,
+        gst: charge.gst,
+        platformFee: charge.fee,
+        payable: charge.total,
+      },
       statusCode: 200,
     });
   } catch (error) {
