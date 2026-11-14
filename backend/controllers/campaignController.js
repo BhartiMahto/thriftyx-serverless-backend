@@ -35,6 +35,22 @@ const CAMPAIGNS = {
     audience: "applicants:6aa2a33ee25ca43b628d46c6",
     label: "Singles Meet 11 Oct — re-invite 27 Sep applicants",
   },
+  // Women free-entry invites to Meta (Facebook/Instagram) lead-ad contacts.
+  // These leads aren't in our DB, so the blast is run externally and each send is
+  // logged to CampaignSend; `audience: "logged"` makes the recipient list + the
+  // delivery report (who saw / didn't) read back from those logs.
+  LEADS_NOV15_FREE: {
+    coupon: "LEADS_NOV15_FREE",
+    sidEnv: "TWILIO_WA_WOMEN_APPLY_SID",
+    audience: "logged",
+    label: "Women free-entry (Meta leads) — 15 Nov · Delhi/Hyderabad/Bengaluru",
+  },
+  LEADS_NOV21_FREE: {
+    coupon: "LEADS_NOV21_FREE",
+    sidEnv: "TWILIO_WA_WOMEN_APPLY_SID",
+    audience: "logged",
+    label: "Women free-entry (Meta leads) — 21 Nov · Mumbai/Pune",
+  },
 };
 
 // Never message the team's own test numbers from a campaign.
@@ -94,6 +110,16 @@ const resolveAudience = async (def) => {
   // Event-applicant audience (e.g. re-invite past applicants) — not User-based.
   if (def.audience && def.audience.startsWith("applicants:")) {
     return resolveApplicants(def.audience.split(":")[1]);
+  }
+  // Externally-sent (Meta lead) campaigns: the recipients ARE the logged sends,
+  // so the preview/recipient list and delivery report read back from CampaignSend.
+  if (def.audience === "logged") {
+    const sends = await CampaignSend.find({ campaign: def.coupon }).select("phone firstName city user_id").lean();
+    return sends.map((s) => ({
+      user_id: s.user_id || null, phone: s.phone,
+      firstName: s.firstName || firstNameOf(s.firstName), name: s.firstName || "",
+      city: s.city || "", gender: "female", optedIn: true, lastBooking: null,
+    }));
   }
   const females = await User.find({ gender: FEMALE, phone: { $nin: [null, ""] } })
     .select("_id name phone city gender notificationPreferences")

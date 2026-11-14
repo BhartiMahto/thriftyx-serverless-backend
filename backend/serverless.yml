@@ -92,6 +92,7 @@ provider:
     TWILIO_WA_EVENT_REMINDER_SID: ${env:TWILIO_WA_EVENT_REMINDER_SID, ''}
     # Invite-only application approved + trip request accepted (pay-link templates)
     TWILIO_WA_APPLICATION_APPROVED_SID: ${env:TWILIO_WA_APPLICATION_APPROVED_SID, ''}
+    TWILIO_WA_WOMEN_APPLY_SID: ${env:TWILIO_WA_WOMEN_APPLY_SID, ''}
     TWILIO_WA_TRIP_ACCEPTED_SID: ${env:TWILIO_WA_TRIP_ACCEPTED_SID, ''}
     SMTP_HOST: ${env:SMTP_HOST, ''}
     SMTP_PORT: ${env:SMTP_PORT, ''}
