@@ -175,6 +175,10 @@ const Event = new Schema({
         type: { type: String, default: "text" },  // text | paragraph | select | boolean | multiselect | video
         options: [{ type: String }],              // choices for select / multiselect
         required: { type: Boolean, default: false },
+        // When set, the question is required ONLY for these genders (and optional
+        // for everyone else) — e.g. ["male"] makes a selfie compulsory for men but
+        // optional for women. Empty = use `required` for all.
+        requiredGenders: { type: [String], default: [] },
     }],
     cordinates: {
         type: Object,

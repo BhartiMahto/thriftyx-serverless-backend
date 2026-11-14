@@ -158,7 +158,14 @@ const submitApplication = async (req, res) => {
     // shown on the login-free apply form, so they can't be required here (else
     // every application would be rejected for an unanswerable field).
     const cleaned = cleanAnswers(answers);
-    const requiredQs = (ev.checkoutQuestions || []).filter((q) => q && q.required && q.key && q.type !== "video");
+    // A question can be required for everyone (`required`) or only for specific
+    // genders (`requiredGenders`, e.g. selfie compulsory for men, optional for women).
+    const g = String(gender || "").trim().toLowerCase();
+    const requiredQs = (ev.checkoutQuestions || []).filter((q) => {
+      if (!q || !q.key || q.type === "video") return false;
+      const rg = Array.isArray(q.requiredGenders) ? q.requiredGenders.map((x) => String(x).toLowerCase()) : [];
+      return rg.length ? rg.includes(g) : !!q.required;
+    });
     const isBlank = (v) => v == null || (Array.isArray(v) ? v.length === 0 : String(v).trim() === "");
     for (const q of requiredQs) {
       const hit = cleaned.find((a) => a.key === q.key);
