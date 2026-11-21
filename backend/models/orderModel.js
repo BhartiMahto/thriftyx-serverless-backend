@@ -188,6 +188,17 @@ const Order = new Schema({
         // + so the admin can retry it knowing why).
         error: { type: String, default: null },
         at: { type: Date, default: null },
+        // --- Manual / off-gateway refund (recorded by the admin in Financial
+        // Insights → Refunds, NOT processed through Razorpay). When the admin
+        // refunds someone directly (UPI/cash/bank transfer), these capture it so
+        // the booking stops counting as "refund pending" and drops out of
+        // website revenue. `manual:true` + a non-gateway `id` ("MANUAL") mark it
+        // as hand-entered so it can be edited/undone later (a real Razorpay
+        // "rfnd_..." refund can never be edited or undone from the UI).
+        manual: { type: Boolean, default: false },
+        method: { type: String, default: null },   // UPI / Cash / Bank transfer / Card
+        note: { type: String, default: null },      // free note from the admin
+        manualBy: { type: Schema.Types.ObjectId, ref: "Admin", default: null },
     },
     // Details of the person actually attending, captured at checkout.
     // Held on the order (not just the user) because they are point-in-time

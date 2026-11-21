@@ -110,6 +110,10 @@ router.patch("/finance/entries/:id", requireModule("finance", "EDIT"), finance.u
 router.delete("/finance/entries/:id", requireModule("finance", "EDIT"), finance.deleteEntry);
 router.post("/finance/reconcile", requireModule("finance", "VIEW"), finance.reconcile);
 router.post("/finance/reconcile/confirm", requireModule("finance", "EDIT"), finance.markReconciled);
+// Refund tracking (month-wise processed / pending) + manual off-gateway refunds.
+router.get("/finance/refunds", requireModule("finance", "VIEW"), finance.refundSummary);
+router.patch("/finance/refunds/:id", requireModule("finance", "EDIT"), finance.markRefund);
+router.delete("/finance/refunds/:id", requireModule("finance", "EDIT"), finance.unmarkRefund);
 
 // --- WhatsApp marketing campaigns (SUPER_ADMIN only — mass outbound messaging) ---
 const campaign = require("../controllers/campaignController");

@@ -482,6 +482,247 @@ const markReconciled = async (req, res) => {
   }
 };
 
+/* ------------------------------ Refund details ------------------------------ */
+
+/**
+ * Refund tracking for Financial Insights → Refunds (and the read-only summary on
+ * Revenue Analytics). Mirrors the exact "who is owed a refund" logic the admin's
+ * refund list already uses, so the numbers always agree:
+ *
+ *   Refundable universe = money was collected (grand_total > 0, not a comp /
+ *   admin-added booking) AND the booking is cancelled OR the application was
+ *   rejected.
+ *
+ * Each such order lands in ONE bucket:
+ *   - processed : refund done & money returned (gateway refund, a manual/off-
+ *                 gateway refund, or an "already fully refunded on Razorpay" note)
+ *   - waived    : refund explicitly waived (closed, no money owed)
+ *   - pending   : owed but not yet refunded  ← "kitne bache h"
+ *   - skipped   : internal test booking, or a duplicate order sharing one payment
+ *                 (refunded once) — kept out of the headline counts
+ *
+ * Month basis: a refund is counted in the month the booking was cancelled/
+ * rejected (fallback: review date, then the order's own creation time).
+ */
+
+// A real Razorpay refund id looks like "rfnd_...". Those are the ONLY refunds the
+// admin can never edit or undo from the UI — everything else (null, "MANUAL",
+// "WAIVED", "OFFLINE_DIRECT") is hand-managed and therefore editable.
+const isGatewayRefund = (r) => !!(r && r.id && /^rfnd_/i.test(String(r.id)));
+const isTestBooking = (name) => /bharti\s*mahto/i.test(String(name || ""));
+const refundWhen = (o) => new Date(o.cancelledAt || o.reviewedAt || o._id.getTimestamp());
+const monthStr = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+const buildRefundRow = (o, bucket, amount, when) => {
+  const r = o.refund || {};
+  const idIsSentinel = r.id && /^(MANUAL|WAIVED|OFFLINE_DIRECT)$/i.test(String(r.id));
+  return {
+    id: String(o._id),
+    name: (o.attendee_details && o.attendee_details.name || "").trim() || "—",
+    phone: (o.attendee_details && o.attendee_details.phone || "").trim(),
+    email: (o.attendee_details && o.attendee_details.email || "").trim(),
+    event: (o.event_id && (o.event_id.name || o.event_id.title)) || "",
+    paid: round2(o.grand_total || 0),
+    amount: round2(amount),
+    bucket,
+    status: r.status || "",
+    method: r.method || "",
+    manual: !!r.manual,
+    gateway: isGatewayRefund(r),
+    reference: r.rrn || (r.id && !idIsSentinel ? r.id : "") || "",
+    note: r.note || r.error || "",
+    paymentId: o.payment_id || "",
+    month: monthStr(when),
+    date: isoDay(when),
+    refundAt: r.at ? isoDay(r.at) : "",
+  };
+};
+
+const refundSummary = async (req, res) => {
+  try {
+    const { from, to, valid } = parseRange(req.query);
+    if (!valid) return res.status(400).json({ message: "Invalid date range", statusCode: 400 });
+
+    const orders = await Order.find({
+      $or: [{ status: "cancelled" }, { applicationStatus: "rejected" }],
+      grand_total: { $gt: 0 },
+      addedByAdmin: { $ne: true },
+    })
+      .populate("event_id", "name title")
+      .select(
+        "attendee_details grand_total status applicationStatus refund payment_id order_id " +
+          "invoice_no cancelledAt reviewedAt createdBy event_id"
+      )
+      .lean();
+
+    // Oldest first so payment-dedupe keeps the earliest pending row.
+    const enriched = orders.map((o) => ({ o, when: refundWhen(o) })).sort((a, b) => a.when - b.when);
+
+    const lists = { processed: [], pending: [], waived: [] };
+    const monthMap = new Map();
+    const seenPendingPay = new Set();
+    const totals = {
+      processedCount: 0, processedAmount: 0,
+      pendingCount: 0, pendingAmount: 0,
+      waivedCount: 0,
+    };
+
+    for (const { o, when } of enriched) {
+      const r = o.refund || {};
+      const status = String(r.status || "").toLowerCase();
+      const done = !!r.id || ["processed", "completed", "refunded", "waived"].includes(status);
+      const waived = status === "waived" || String(r.id || "") === "WAIVED";
+      const alreadyOnGateway = /fully refunded/i.test(String(r.error || ""));
+
+      let bucket, amount;
+      if (waived) {
+        bucket = "waived"; amount = 0;
+      } else if (done || alreadyOnGateway) {
+        bucket = "processed"; amount = r.amount != null ? r.amount : o.grand_total;
+      } else {
+        amount = r.amount != null ? r.amount : o.grand_total;
+        if (isTestBooking(o.attendee_details && o.attendee_details.name)) { bucket = "skipped"; }
+        else if (o.payment_id && seenPendingPay.has(o.payment_id)) { bucket = "skipped"; }
+        else { bucket = "pending"; if (o.payment_id) seenPendingPay.add(o.payment_id); }
+      }
+
+      // Keep the range filter here (dedupe stays global so a narrow range can't
+      // resurface a duplicate just because its twin fell outside the window).
+      if (when < from || when > to) continue;
+      if (bucket === "skipped") continue;
+
+      const row = buildRefundRow(o, bucket, amount, when);
+      lists[bucket].push(row);
+
+      const m = monthMap.get(row.month) || {
+        period: row.month,
+        processedCount: 0, processedAmount: 0,
+        pendingCount: 0, pendingAmount: 0,
+        waivedCount: 0,
+      };
+      if (bucket === "processed") {
+        m.processedCount += 1; m.processedAmount = round2(m.processedAmount + row.amount);
+        totals.processedCount += 1; totals.processedAmount = round2(totals.processedAmount + row.amount);
+      } else if (bucket === "pending") {
+        m.pendingCount += 1; m.pendingAmount = round2(m.pendingAmount + row.amount);
+        totals.pendingCount += 1; totals.pendingAmount = round2(totals.pendingAmount + row.amount);
+      } else if (bucket === "waived") {
+        m.waivedCount += 1; totals.waivedCount += 1;
+      }
+      monthMap.set(row.month, m);
+    }
+
+    const monthly = [...monthMap.values()]
+      .map((m) => ({
+        ...m,
+        totalCount: m.processedCount + m.pendingCount,
+        totalAmount: round2(m.processedAmount + m.pendingAmount),
+      }))
+      .sort((a, b) => a.period.localeCompare(b.period));
+
+    totals.totalCount = totals.processedCount + totals.pendingCount;
+    totals.totalAmount = round2(totals.processedAmount + totals.pendingAmount);
+
+    // Newest first for the tables; cap processed to keep the payload light.
+    const byDateDesc = (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+    lists.pending.sort(byDateDesc);
+    lists.processed.sort(byDateDesc);
+    lists.waived.sort(byDateDesc);
+
+    res.status(200).json({
+      message: "Refund summary",
+      data: {
+        range: { from, to },
+        totals,
+        monthly,
+        pending: lists.pending,
+        processed: lists.processed.slice(0, 500),
+        waived: lists.waived,
+      },
+      statusCode: 200,
+    });
+  } catch (e) {
+    console.error("refundSummary error:", e.message);
+    res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+/**
+ * PATCH /api/admin/finance/refunds/:id — record (or correct) a MANUAL/off-gateway
+ * refund on a booking. Never calls Razorpay. Setting refund.id makes the booking
+ * count as "processed" and drops it out of website revenue. A real Razorpay
+ * refund (rfnd_...) is protected and cannot be overwritten here.
+ */
+const markRefund = async (req, res) => {
+  try {
+    const existing = await Order.findById(req.params.id).select("refund grand_total").lean();
+    if (!existing) return res.status(404).json({ message: "Booking not found", statusCode: 404 });
+    if (isGatewayRefund(existing.refund)) {
+      return res.status(409).json({ message: "This booking was refunded through Razorpay — it can't be edited here.", statusCode: 409 });
+    }
+
+    const b = req.body || {};
+    const amount = Number(b.amount);
+    if (!Number.isFinite(amount) || amount < 0) return res.status(400).json({ message: "amount must be a positive number", statusCode: 400 });
+    const when = b.date ? new Date(b.date) : new Date();
+    if (Number.isNaN(when.getTime())) return res.status(400).json({ message: "a valid date is required", statusCode: 400 });
+    const reference = String(b.reference || "").trim();
+    const method = String(b.method || "").trim();
+    const note = String(b.note || "").trim();
+    const status = ["processed", "pending", "failed"].includes(String(b.status)) ? b.status : "processed";
+
+    const update = {
+      "refund.id": reference || "MANUAL",   // non-null → counts as done, leaves revenue
+      "refund.status": status,
+      "refund.amount": round2(amount),
+      "refund.rrn": reference || null,
+      "refund.error": null,
+      "refund.at": when,
+      "refund.manual": true,
+      "refund.method": method || null,
+      "refund.note": note || null,
+      "refund.manualBy": (req.admin && req.admin._id) || null,
+    };
+    const updated = await Order.findByIdAndUpdate(req.params.id, { $set: update }, { new: true })
+      .select("attendee_details grand_total status applicationStatus refund payment_id")
+      .lean();
+
+    res.status(200).json({ message: "Refund recorded", data: updated, statusCode: 200 });
+  } catch (e) {
+    console.error("markRefund error:", e.message);
+    res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
+/**
+ * DELETE /api/admin/finance/refunds/:id — undo a manual/off-gateway refund,
+ * sending the booking back to "pending". A real Razorpay refund is protected.
+ */
+const unmarkRefund = async (req, res) => {
+  try {
+    const existing = await Order.findById(req.params.id).select("refund").lean();
+    if (!existing) return res.status(404).json({ message: "Booking not found", statusCode: 404 });
+    if (isGatewayRefund(existing.refund)) {
+      return res.status(409).json({ message: "This is a Razorpay refund — it can't be undone here.", statusCode: 409 });
+    }
+    if (!existing.refund || !existing.refund.id) {
+      return res.status(400).json({ message: "Nothing to undo — this booking has no recorded refund.", statusCode: 400 });
+    }
+    const cleared = {
+      "refund.id": null, "refund.status": null, "refund.amount": null, "refund.rrn": null,
+      "refund.error": null, "refund.at": null, "refund.manual": false, "refund.method": null,
+      "refund.note": null, "refund.manualBy": null,
+    };
+    const updated = await Order.findByIdAndUpdate(req.params.id, { $set: cleared }, { new: true })
+      .select("attendee_details grand_total status applicationStatus refund payment_id")
+      .lean();
+    res.status(200).json({ message: "Refund undone", data: updated, statusCode: 200 });
+  } catch (e) {
+    console.error("unmarkRefund error:", e.message);
+    res.status(500).json({ message: "Server Error", statusCode: 500 });
+  }
+};
+
 module.exports = {
   listEntries,
   createEntry,
@@ -492,4 +733,7 @@ module.exports = {
   citySales,
   reconcile,
   markReconciled,
+  refundSummary,
+  markRefund,
+  unmarkRefund,
 };
